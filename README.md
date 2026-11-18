@@ -2,7 +2,7 @@
 
 R package and computational companion for STA5001 Bayesian & Computational
 Statistics. Section numbers follow the lecture notes. The companion currently
-covers Sections 1–5. Each worked example develops the concept, states the
+covers Sections 1–6. Each worked example develops the concept, states the
 example, explains the code, and shows the resulting numbers and figures.
 
 | Section | R Markdown | Rendered HTML |
@@ -12,6 +12,7 @@ example, explains the code, and shows the resulting numbers and figures.
 | 3. Univariate and Multivariate Normal Models | [Source](section-03/section-03.Rmd) | [HTML file](section-03/section-03.html) |
 | 4. Gaussian Linear Regression | [Source](section-04/section-04.Rmd) | [HTML file](section-04/section-04.html) |
 | 5. Bayesian Model Uncertainty | [Source](section-05/section-05.Rmd) | [HTML file](section-05/section-05.html) |
+| 6. Direct Simulation and Importance Sampling | [Source](section-06/section-06.Rmd) | [HTML file](section-06/section-06.html) |
 
 Download an HTML file and open it in a browser to see the code, results, and
 figures. Each HTML file is generated from the R Markdown source beside it
@@ -60,6 +61,6 @@ R CMD INSTALL BayesComp_*.tar.gz
 Rscript --vanilla BayesComp/tools/render-sections.R
 ```
 
-The render script runs each section in a separate R session and writes its
-HTML beside the source. Commit the revised HTML with its source. GitHub
-Actions checks the package and rebuilds the section outputs.
+The render script runs each section in a separate local R session and writes
+its HTML beside the source. Run the package check and rebuild locally before
+committing revised sources and HTML.

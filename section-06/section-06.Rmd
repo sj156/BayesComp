@@ -1,0 +1,915 @@
+---
+title: "Section 6 — Direct Simulation and Importance Sampling"
+subtitle: "STA5001 R Computational Companion"
+author: "STA5001 Bayesian & Computational Statistics"
+output:
+  html_document:
+    toc: true
+    toc_depth: 3
+    number_sections: false
+    code_folding: show
+    code_download: true
+    self_contained: true
+    math_method: mathml
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = TRUE, message = FALSE,
+                      fig.width = 7, fig.height = 4, digits = 4)
+notes_figure <- function(file) {
+  knitr::include_graphics(system.file("figures", file, package = "BayesComp",
+                                      mustWork = TRUE))
+}
+```
+
+Open `section-06.Rmd` in RStudio and choose **Knit**. The examples use BayesComp
+for the Eight Schools data, Gaussian calculations, and lecture figures. From
+the repository root, run `R CMD INSTALL BayesComp` in a terminal to install the
+package from this checkout before knitting.
+
+The methods answer different computational questions. Inversion turns
+uniform draws into posterior draws when a CDF is available. Rejection uses
+an envelope to retain posterior draws. Importance sampling keeps the
+proposals and changes how much each one contributes to a posterior summary.
+
+# Section 6.1 — Inverse CDF Method
+
+## Percentiles and continuous inversion
+
+**Concept.** A draw from a continuous CDF $F$ has a uniform percentile
+$F(X)$. Inversion starts with a uniform percentile and returns a draw on
+the parameter scale.
+
+**Example.** Return to the $\operatorname{Beta}(9,21)$ posterior from
+Section 2.1. Compare the widths of the intervals between the 20th and
+30th percentiles and between the 80th and 90th percentiles.
+
+Use `qbeta()` for the interval endpoints and `pbeta()` to confirm their
+probability. Then pass independent uniforms to the same quantile
+function and compare the resulting sample mean with $9/30$.
+
+```{r beta-pit-and-inversion}
+levels <- rbind(lower = c(.2, .3), upper = c(.8, .9))
+endpoints <- qbeta(levels, shape1 = 9, shape2 = 21)
+knitr::kable(data.frame(left = endpoints[, 1], right = endpoints[, 2],
+                        width = endpoints[, 2] - endpoints[, 1],
+                        probability = pbeta(endpoints[, 2], 9, 21) -
+                          pbeta(endpoints[, 1], 9, 21)), digits = 4)
+
+set.seed(61027)
+u_beta <- runif(10000)
+theta_beta <- qbeta(u_beta, 9, 21)
+beta_mcse <- sd(theta_beta) / sqrt(length(theta_beta))
+stopifnot(max(abs(pbeta(theta_beta, 9, 21) - u_beta)) < 1e-12,
+          abs(mean(theta_beta) - .3) < 5 * beta_mcse)
+c(simulated_mean = mean(theta_beta), exact_mean = .3, MCSE = beta_mcse)
+```
+
+```{r beta-pit-figure, echo=FALSE, out.width="100%", fig.cap="Lecture notes, Section 6.1. The shaded regions have different widths on the parameter scale and equal widths on the percentile scale."}
+notes_figure("section61-pit-percentiles.png")
+```
+
+## Inversion at CDF jumps
+
+**Concept.** At a jump, the quantile is the first value where the CDF
+reaches or exceeds the requested probability.
+
+**Example.** Let $X$ take values $0,1,3$ with masses $0.2,0.5,0.3$.
+In particular, $u=0.6$ belongs to the jump at one.
+
+Accumulate the probability masses in support order. For each input, find
+the first eligible index. Checking the input $u=0.2$ makes the endpoint
+convention explicit.
+
+```{r discrete-inversion}
+support <- c(0, 1, 3)
+masses <- c(.2, .5, .3)
+cumulative_mass <- cumsum(masses)
+discrete_quantile <- function(u) {
+  vapply(u, function(p) support[which(cumulative_mass >= p)[1]], numeric(1))
+}
+
+stopifnot(identical(discrete_quantile(c(.2, .6, .9)), support))
+knitr::kable(data.frame(u = c(.2, .6, .9),
+                        quantile = discrete_quantile(c(.2, .6, .9))))
+
+set.seed(61028)
+discrete_draws <- discrete_quantile(runif(10000))
+simulated_mass <- tabulate(match(discrete_draws, support),
+                            nbins = length(support)) / length(discrete_draws)
+knitr::kable(data.frame(support, exact = masses, simulated = simulated_mass),
+             digits = 4)
+```
+
+```{r discrete-quantile-figure, echo=FALSE, out.width="100%", fig.cap="Lecture notes, Section 6.1. The first crossing for a uniform input of 0.6 is at one."}
+notes_figure("section61-quantile-geometry.png")
+```
+
+## Numerical inversion for Eight Schools
+
+**Concept.** A numerical posterior CDF can have truncation error from the
+finite integration range and discretization error from the grid. Increasing
+the number of draws reduces simulation error for that computed CDF.
+
+**Example.** For Rubin's Eight Schools, estimate
+$\Pr(\tau>10\mid\mathbf y)$, where $\tau$ is the between-school standard
+deviation in SAT-Verbal points. The observations are effect estimates
+with known sampling variances $s_j^2$. Use the Section 3 Gaussian model with
+$\eta\sim N(0,400)$ and $\tau^2\sim\operatorname{IG}(3,200)$.
+
+Use the package's integrated likelihood, adding the prior on $\tau$.
+The expression for the prior includes the Jacobian $2\tau$ from variance
+to standard deviation. For an independent check on the trapezoidal CDF,
+integrate adaptively in $z=\log\tau$. The second Jacobian adds $z$ to
+the log density.
+
+```{r schools-cdf-reference}
+library(BayesComp)
+data("eight_schools", package = "BayesComp")
+knitr::kable(eight_schools, col.names = c("School", "Estimated effect", "SE"))
+school_y <- setNames(eight_schools$effect, eight_schools$school)
+school_s2 <- setNames(eight_schools$se^2, eight_schools$school)
+
+log_scale_prior <- function(tau, b = 200) {
+  result <- rep(-Inf, length(tau))
+  positive <- tau > 0
+  t <- tau[positive]
+  result[positive] <- log(2) + 3 * log(b) - lgamma(3) -
+    7 * log(t) - b / t^2
+  result
+}
+
+log_scale_kernel <- function(z, b = 200) {
+  # Outside this range the kernel is negligible in double precision.
+  result <- rep(-Inf, length(z))
+  inside <- is.finite(z) & abs(z) < 350
+  if (any(inside)) {
+    tau <- exp(z[inside])
+    result[inside] <- school_means_log_likelihood(tau, school_y, school_s2,
+                                                   m0 = 0, v0 = 400) +
+      log_scale_prior(tau, b) + z[inside]
+  }
+  result
+}
+
+mode_fit <- optimize(log_scale_kernel, c(-4, 8), maximum = TRUE, tol = 1e-10)
+scale_integral <- function(h, lower = -Inf, upper = Inf, b = 200) {
+  integrand <- function(z) {
+    kernel <- log_scale_kernel(z, b)
+    active <- is.finite(kernel)
+    value <- numeric(length(z))
+    if (any(active)) {
+      value[active] <- exp(kernel[active] - mode_fit$objective) * h(exp(z[active]))
+    }
+    value
+  }
+  integrate(integrand, lower, upper, rel.tol = 1e-9)$value
+}
+ones <- function(tau) rep(1, length(tau))
+scale_norm <- scale_integral(ones)
+tail_reference <- scale_integral(ones, lower = log(10)) / scale_norm
+stopifnot(abs(tail_reference - .169870) < 5e-7)
+c(tail_reference = tail_reference)
+```
+
+For each $(T,h)$ in the notes, the package accumulates trapezoidal masses
+and normalizes them on $[0,T]$. Linearly interpolate at 10. Compare the
+result with quadrature before sampling, so the error column isolates
+the numerical approximation.
+
+```{r schools-cdf-grids}
+settings <- data.frame(T = c(20, 80, 80, 80), h = c(2, 2, .5, .1))
+school_grids <- Map(function(T, h) {
+  school_means_grid(school_y, school_s2, 0, 400, log_scale_prior,
+                    upper = T, n_grid = as.integer(round(T / h)) + 1L)
+}, settings$T, settings$h)
+
+computed_cdf <- function(grid, tau) {
+  approx(grid$tau, grid$cdf, xout = tau, rule = 2)$y
+}
+
+implied_tail <- vapply(school_grids, function(g) 1 - computed_cdf(g, 10),
+                        numeric(1))
+omitted_tail <- vapply(settings$T, function(T) {
+  scale_integral(ones, lower = log(T)) / scale_norm
+}, numeric(1))
+knitr::kable(cbind(settings, implied_tail,
+                   CDF_error = implied_tail - tail_reference, omitted_tail),
+             digits = 7)
+```
+
+To invert, locate the two grid nodes bracketing each uniform percentile
+and interpolate on that segment. This is the direct solution of the
+piecewise-linear CDF. Bisection gives the same answer when the CDF is
+supplied only as a callable function. Its upper endpoint always has CDF
+at least as large as the requested percentile.
+
+```{r schools-cdf-draw}
+fine <- school_grids[[4]]
+set.seed(61029)
+u_scale <- runif(10000)
+left <- findInterval(u_scale, fine$cdf, left.open = TRUE)
+right <- left + 1L
+fraction <- (u_scale - fine$cdf[left]) / (fine$cdf[right] - fine$cdf[left])
+tau_draw <- fine$tau[left] + fraction * (fine$tau[right] - fine$tau[left])
+
+bisect_quantile <- function(p, cdf, lower, upper, tol = 1e-6) {
+  stopifnot(cdf(lower) < p, cdf(upper) >= p)
+  while (upper - lower > tol) {
+    midpoint <- (lower + upper) / 2
+    if (cdf(midpoint) < p) lower <- midpoint else upper <- midpoint
+  }
+  upper
+}
+fine_cdf <- function(tau) computed_cdf(fine, tau)
+first_bisected <- bisect_quantile(u_scale[1], fine_cdf, 0, 80)
+stopifnot(abs(first_bisected - tau_draw[1]) <= 1e-6)
+
+tail_draw <- tau_draw > 10
+tail_mcse <- sd(tail_draw) / sqrt(length(tail_draw))
+stopifnot(max(abs(computed_cdf(fine, tau_draw) - u_scale)) < 1e-12,
+          abs(mean(tail_draw) - implied_tail[4]) < 5 * tail_mcse)
+c(quadrature = tail_reference, grid = implied_tail[4],
+  simulated = mean(tail_draw), MCSE = tail_mcse)
+```
+
+```{r schools-cdf-visual, fig.cap="The coarse and fine grids differ near the threshold. The empirical CDF fluctuates around the fine computed CDF because the draw count is finite."}
+window <- seq(4, 15, length.out = 300)
+plot(window, computed_cdf(fine, window), type = "l", lwd = 2,
+     col = "#0072B2", xlab = "Between-school SD (SAT-Verbal points)",
+     ylab = "Cumulative probability")
+lines(window, computed_cdf(school_grids[[2]], window), col = "#D55E00",
+      lty = 2, lwd = 2)
+lines(window, ecdf(tau_draw)(window), col = "grey35", lty = 3, lwd = 2)
+abline(v = 10, col = "grey60")
+legend("bottomright", c("Fine grid", "Coarse grid", "Fine-grid sample"),
+       lty = 1:3, lwd = 2, col = c("#0072B2", "#D55E00", "grey35"), bty = "n")
+```
+
+The fine-grid discrepancy is small relative to the MCSE here. Doubling
+the draw count would leave the grid discrepancy in place. Section 6.3
+shows how to attach dependent school effects to each draw of the scale.
+
+# Section 6.2 — Rejection Sampling
+
+## A global bound for the daily-count posterior
+
+**Concept.** When a normalized proposal $q$ covers the posterior kernel
+$k$ and $k/q\le B$ everywhere, retaining a proposal with probability
+$k/(Bq)$ gives a posterior draw.
+
+**Example.** The 12 counts from Section 5 are
+$(0,0,1,1,1,2,2,2,3,4,5,7)$. Conditional on $H_1$, the counts have a
+negative-binomial distribution with size 2 and daily mean $\lambda$.
+Use the $\operatorname{Gamma}(2,1)$ prior as the proposal. The ratio
+$k/q$ is the likelihood kernel, which has its global maximum at $7/3$
+by the derivative calculation in the notes.
+
+Generate prior draws in batches. For each candidate compare $\log U$
+with the log likelihood minus its maximum. Stop the retained sequence
+at acceptance 10,000 and count proposals through that acceptance. The
+final batch is generated for vectorization, so the logical stopping
+count can be smaller than the number actually generated in R.
+
+```{r count-rejection-sampler}
+counts <- c(0, 0, 1, 1, 1, 2, 2, 2, 3, 4, 5, 7)
+total <- sum(counts)
+size <- 2
+log_count_likelihood <- function(lambda) {
+  total * log(lambda) - (total + length(counts) * size) * log(lambda + size)
+}
+lambda_mode <- mean(counts)
+log_bound <- log_count_likelihood(lambda_mode)
+
+set.seed(62027)
+n_accept <- 10000L
+retained <- numeric(n_accept)
+filled <- proposed <- 0L
+while (filled < n_accept) {
+  candidate <- rgamma(10000L, shape = 2, rate = 1)
+  log_acceptance <- log_count_likelihood(candidate) - log_bound
+  stopifnot(all(log_acceptance <= 1e-12))
+  accepted <- which(log(runif(length(candidate))) <= log_acceptance)
+  take <- min(length(accepted), n_accept - filled)
+  kept <- head(accepted, take)
+  retained[filled + seq_len(take)] <- candidate[kept]
+  filled <- filled + take
+  proposed <- proposed + if (filled == n_accept) tail(kept, 1) else length(candidate)
+}
+c(accepted = n_accept, proposals_through_last_acceptance = proposed)
+```
+
+Average three functions of the retained rates. For weekly capacity,
+use the conditional probability from a negative-binomial distribution
+with size 14 and mean $7\lambda$. The table compares those averages
+with adaptive quadrature of the posterior and reports an iid MCSE
+for each target. Quadrature also gives the reference acceptance rate.
+
+```{r count-rejection-summary}
+count_proposal <- function(lambda) dgamma(lambda, 2, rate = 1)
+accept_prob <- function(lambda) exp(log_count_likelihood(lambda) - log_bound)
+accepted_kernel <- function(lambda) count_proposal(lambda) * accept_prob(lambda)
+quad <- function(f, lower = 0, upper = Inf) {
+  integrate(f, lower, upper, rel.tol = 1e-10)$value
+}
+acceptance <- quad(accepted_kernel)
+count_posterior <- function(lambda) accepted_kernel(lambda) / acceptance
+weekly_risk <- function(lambda) {
+  pnbinom(25, size = 14, mu = 7 * lambda, lower.tail = FALSE)
+}
+
+count_reference <- c(quad(function(x) x * count_posterior(x)),
+                     quad(count_posterior, lower = 3),
+                     quad(function(x) weekly_risk(x) * count_posterior(x)))
+h_count <- cbind(retained, retained > 3, weekly_risk(retained))
+count_estimate <- colMeans(h_count)
+count_mcse <- apply(h_count, 2, sd) / sqrt(n_accept)
+stopifnot(abs(acceptance - .341171767725) < 1e-9,
+          all(abs(count_estimate - count_reference) < 5 * count_mcse))
+knitr::kable(data.frame(summary = c("Mean daily rate", "Pr(rate > 3)",
+                                     "Pr(weekly count > 25)"),
+                        quadrature = count_reference, estimate = count_estimate,
+                        MCSE = count_mcse), digits = 4)
+c(observed_acceptance = n_accept / proposed, quadrature_acceptance = acceptance,
+  expected_proposals_per_draw = 1 / acceptance)
+```
+
+```{r count-construction-figure, echo=FALSE, out.width="100%", fig.cap="Lecture notes, Section 6.2. The prior supplies the proposals. The likelihood ratio is largest at 7/3."}
+notes_figure("section62-count-construction.png")
+```
+
+## When an envelope fails
+
+**Concept.** Rejection requires a global upper bound. Clipping the
+acceptance probability at one after choosing a bound that is too low
+changes the retained density. A proposal with tails that are too light
+may admit no finite bound.
+
+**Example.** Compare the correct Gamma prior envelope with the invalid
+half-bound. Then examine the conjugate Poisson posterior,
+$\operatorname{Gamma}(30,13)$, as a possible proposal for the negative-binomial
+target.
+
+Integrate the clipped accepted kernel in three pieces split at the
+two crossings of $B/2$. For the Poisson proposal, compute the log ratio
+at increasing rates. Up to a constant the ratio on the log scale is
+$12\lambda-52\log(\lambda+2)$, which tends to infinity.
+
+```{r count-envelope-failure}
+half_bound_gap <- function(x) log_count_likelihood(x) - log_bound + log(2)
+crossings <- c(uniroot(half_bound_gap, c(.01, lambda_mode))$root,
+               uniroot(half_bound_gap, c(lambda_mode, 30))$root)
+clipped_kernel <- function(x) count_proposal(x) * pmin(1, 2 * accept_prob(x))
+clipped_integral <- function(h) {
+  edges <- c(0, crossings, Inf)
+  sum(vapply(1:3, function(i) {
+    quad(function(x) h(x) * clipped_kernel(x), edges[i], edges[i + 1L])
+  }, numeric(1)))
+}
+clipped_acceptance <- clipped_integral(ones)
+knitr::kable(data.frame(
+  envelope = c("Valid bound", "Loose bound (2B)", "Clipped half-bound"),
+  acceptance = c(acceptance, acceptance / 2, clipped_acceptance),
+  retained_mean = c(rep(count_reference[1], 2),
+                    clipped_integral(identity) / clipped_acceptance)
+), digits = 4)
+rates <- c(3, 10, 20, 40)
+knitr::kable(data.frame(rate = rates,
+                        log_ratio_up_to_constant = 12 * rates - 52 * log(rates + 2)))
+```
+
+```{r count-failure-figure, echo=FALSE, out.width="100%", fig.cap="Lecture notes, Section 6.2. The clipped rule distorts the retained density, and the ratio against the Poisson proposal grows in the right tail."}
+notes_figure("section62-count-failure.png")
+```
+
+## What a product envelope costs
+
+**Concept.** For $d$ independent coordinates with a common scalar bound
+$M_1$, the global envelope is $M_1^d$ for joint rejection. Sampling each
+independent coordinate to acceptance avoids discarding successful coordinates.
+
+**Example.** Use the lecture's $M_1=1.2$ and compare costs at $d=20$.
+Compute both costs in scalar proposals to use the same units.
+
+```{r rejection-product-cost, fig.cap="Whole-vector rejection discards all coordinates when the vector fails its acceptance test. The separate cost applies to independent targets."}
+dimension <- 1:30
+M1 <- 1.2
+joint_cost <- dimension * M1^dimension
+separate_cost <- dimension * M1
+c(joint_acceptance = M1^-20, joint_scalar_cost = joint_cost[20],
+  separate_scalar_cost = separate_cost[20])
+plot(dimension, joint_cost, type = "l", log = "y", col = "#D55E00",
+     lwd = 2, xlab = "Dimension", ylab = "Expected scalar proposals per draw")
+lines(dimension, separate_cost, col = "#0072B2", lty = 2, lwd = 2)
+legend("topleft", c("Whole vector", "Separate coordinates"), lwd = 2,
+       lty = 1:2, col = c("#D55E00", "#0072B2"), bty = "n")
+```
+
+# Section 6.3 — Importance Sampling
+
+## Ordinary weights for a rare event
+
+**Concept.** When the target density $\pi$ is normalized, the average of
+$h(X)\pi(X)/q(X)$ over independent $q$ draws estimates $E_\pi[h(X)]$.
+The contribution's standard deviation determines the MCSE.
+
+**Example.** Under a standard Normal target, estimate the chance of
+exceeding four. A $N(4,1)$ proposal spends about half its draws above
+four, where the integrand is nonzero.
+
+Generate draws from the shifted Normal and evaluate the density ratio
+only at exceedances. Compare with the exact Normal tail and calculate
+the budgets implied by the two methods' exact variances.
+
+```{r ordinary-importance}
+set.seed(63031)
+n_rare <- 10000L
+x_rare <- rnorm(n_rare, mean = 4)
+contribution <- numeric(n_rare)
+hit <- x_rare > 4
+contribution[hit] <- exp(dnorm(x_rare[hit], log = TRUE) -
+                           dnorm(x_rare[hit], mean = 4, log = TRUE))
+
+rare_truth <- pnorm(4, lower.tail = FALSE)
+rare_mcse <- sd(contribution) / sqrt(n_rare)
+stopifnot(abs(mean(contribution) - rare_truth) < 5 * rare_mcse)
+c(exact = rare_truth, estimate = mean(contribution),
+  MCSE = rare_mcse, proposal_hits = sum(hit))
+rare_variances <- c(direct = rare_truth * (1 - rare_truth),
+                    shifted = exp(16) * pnorm(8, lower.tail = FALSE) - rare_truth^2)
+ceiling(rare_variances / (.1 * rare_truth)^2)
+```
+
+```{r rare-event-figure, echo=FALSE, out.width="100%", fig.cap="Course figure for Section 6.3. Compare the number of draws needed to reach a relative MCSE of 10%."}
+notes_figure("section63-rare-event.png")
+```
+
+A proposal designed for one integral may be unsuitable for other
+summaries. The calculation above uses the known Normal normalization.
+A posterior kernel usually needs the ratio of averages below.
+
+## Self-normalized weights for transmission prediction
+
+**Concept.** Posterior weights can be computed up to a common constant.
+Normalize them to sum to one, and average the prediction using those
+masses. The MCSE uses the *centered weighted contributions*.
+
+**Example.** Model manual transmission in the 32 `datasets::mtcars`
+records using standardized weight and horsepower with an intercept.
+Use independent $N(0,100)$ priors for the three coefficients. At mean
+horsepower, compare manual-transmission probabilities at 2,000, 3,000,
+and 4,000 lb and at the sample mean weight.
+
+Use a stable log likelihood and find its penalized mode. Invert the
+negative log posterior Hessian at the mode and use twice that matrix as
+the scale of a multivariate $t_5$ proposal. The row of standard Normals
+and the chi-square draw in the same row form one multivariate Student
+draw. Subtract the proposal log density from the log kernel, then subtract
+the largest log weight before exponentiating.
+
+```{r transmission-weighted-fit}
+normalize_weights <- function(log_weights) {
+  mass <- exp(log_weights - max(log_weights))
+  mass / sum(mass)
+}
+
+weighted_summary <- function(h, weights) {
+  h <- as.matrix(h)
+  estimate <- colSums(h * weights)
+  centered <- sweep(h, 2, estimate, "-")
+  n <- length(weights)
+  mcse <- sqrt(n / (n - 1) * colSums((weights * centered)^2))
+  rbind(estimate = estimate, MCSE = mcse)
+}
+
+cars6 <- datasets::mtcars
+standardized <- scale(cars6[c("wt", "hp")])
+car_X <- cbind(1, standardized)
+car_y <- cars6$am
+stopifnot(nrow(car_X) == 32, sum(car_y) == 13)
+softplus <- function(x) pmax(x, 0) + log1p(exp(-abs(x)))
+negative_log_post <- function(beta) {
+  linear <- drop(car_X %*% beta)
+  sum(softplus(linear) - car_y * linear) + sum(beta^2) / 200
+}
+negative_gradient <- function(beta) {
+  fitted <- plogis(drop(car_X %*% beta))
+  drop(crossprod(car_X, fitted - car_y)) + beta / 100
+}
+fit <- optim(rep(0, 3), negative_log_post, gr = negative_gradient,
+             method = "BFGS", control = list(reltol = 1e-12))
+stopifnot(fit$convergence == 0, max(abs(negative_gradient(fit$par))) < 1e-5)
+mode_p <- plogis(drop(car_X %*% fit$par))
+local_hessian <- crossprod(car_X, car_X * (mode_p * (1 - mode_p))) +
+  diag(1 / 100, 3)
+local_chol <- chol(solve(local_hessian))
+
+set.seed(5011302)
+n_car <- 200000L
+df_car <- 5
+z_car <- matrix(rnorm(n_car * 3), ncol = 3) *
+  sqrt(2) / sqrt(rchisq(n_car, df_car) / df_car)
+beta_car <- sweep(z_car %*% local_chol, 2, fit$par, "+")
+log_q_car <- -(df_car + 3) / 2 * log1p(rowSums(z_car^2) / (2 * df_car))
+log_target_car <- numeric(n_car)
+for (first in seq.int(1L, n_car, by = 10000L)) {
+  rows <- first:min(first + 9999L, n_car)
+  linear <- beta_car[rows, , drop = FALSE] %*% t(car_X)
+  log_target_car[rows] <- drop(linear %*% car_y) - rowSums(softplus(linear)) -
+    rowSums(beta_car[rows, , drop = FALSE]^2) / 200
+}
+car_weights <- normalize_weights(log_target_car - log_q_car)
+```
+
+For each weight, evaluate every candidate regression at that weight and
+at sample-mean horsepower. Average the same candidate predictions once
+with equal masses and once with importance masses. The omitted constant
+in `log_q_car` cancels when normalizing.
+
+```{r transmission-prediction}
+profiles <- c(2, 3, 4, mean(cars6$wt))
+z_wt <- (profiles - attr(standardized, "scaled:center")[["wt"]]) /
+  attr(standardized, "scaled:scale")[["wt"]]
+manual <- plogis(outer(beta_car[, 2], z_wt) + beta_car[, 1])
+car_results <- weighted_summary(manual, car_weights)
+stopifnot(abs(sum(car_weights) - 1) < 1e-12,
+          abs(car_results["estimate", 4] - .1450) < .003)
+knitr::kable(data.frame(weight_lb = round(1000 * profiles),
+                        equal_mass = colMeans(manual),
+                        posterior = car_results["estimate", ],
+                        MCSE = car_results["MCSE", ]), digits = 4)
+```
+
+```{r transmission-figure, echo=FALSE, out.width="100%", fig.cap="Lecture notes, Section 6.3. The weighted and equal-mass curves average the same candidate regressions at mean horsepower."}
+notes_figure("prelude-importance-real.png")
+```
+
+The weighted curve describes the fitted probability for a specified
+profile in this observational model. Its MCSE measures the precision of
+the computed posterior average.
+
+## Weighted joint records for Eight Schools
+
+**Concept.** If a proposal uses the target's exact conditionals, only
+the approximate marginal needs a weight correction. Each weight belongs
+to a complete joint record.
+
+**Example.** Use the model in Section 6.1. School A's estimated effect
+is 28 points with SE 15. The estimate at G is 18 with SE 10. Estimate
+$\Pr(\theta_G>\theta_A\mid\mathbf y)$ together with
+$\Pr(\tau>10\mid\mathbf y)$ and the mean shrinkage weight
+$225/(225+\tau^2)$ for A.
+
+Calculate the mode and curvature on the $z=\log\tau$ scale.
+Use the notes' narrow and broad $t_5$ proposals with scale multipliers
+$0.5$ and $1.5$. At each proposed scale, draw one $\eta$ and use it
+for all eight school effects. The Normal conditional densities cancel
+from the ratio, leaving the log-scale kernel minus the log proposal.
+
+```{r schools-importance-draws}
+z_mode <- mode_fit$maximum
+step <- 1e-4
+curvature <- -(log_scale_kernel(z_mode + step) -
+                 2 * log_scale_kernel(z_mode) +
+                 log_scale_kernel(z_mode - step)) / step^2
+local_scale <- 1 / sqrt(curvature)
+
+sample_school_records <- function(multiplier, n) {
+  proposal_scale <- multiplier * local_scale
+  z <- z_mode + proposal_scale * rt(n, df = 5)
+  log_q <- dt((z - z_mode) / proposal_scale, df = 5, log = TRUE) -
+    log(proposal_scale)
+  tau <- exp(z)
+  gaussian <- school_means_conditional(tau, school_y, school_s2, 0, 400)
+  eta <- rnorm(n, gaussian$m, sqrt(gaussian$v))
+  conditional_mean <- sweep(gaussian$w, 2, school_y, "*") +
+    (1 - gaussian$w) * eta
+  theta <- matrix(rnorm(length(conditional_mean), conditional_mean,
+                        sqrt(gaussian$d)), nrow = n,
+                  dimnames = list(NULL, names(school_y)))
+  log_weights <- log_scale_kernel(z) - log_q
+  list(z = z, tau = tau, eta = eta, theta = theta, log_weights = log_weights,
+       weights = normalize_weights(log_weights))
+}
+
+set.seed(63051)
+school_samples <- lapply(c(Narrow = .5, Broad = 1.5), sample_school_records,
+                         n = 2000L)
+c(log_scale_mode = z_mode, curvature_scale = local_scale)
+```
+
+```{r schools-proposals-figure, echo=FALSE, out.width="100%", fig.cap="Lecture notes, Section 6.3. The bars are effect estimates plus or minus 1.96 standard errors. The proposals approximate the marginal posterior of log tau."}
+notes_figure("section6-rubin-proposals.png")
+```
+
+For the quadrature benchmark on the effect comparison, integrate out
+the shared center analytically at each scale. The contrast variance is
+$d_G+d_A+(w_G-w_A)^2v_\tau$. Evaluate the Normal exceedance probability
+using that variance, then integrate it over $\tau$. The weighted sample
+instead averages the indicator from each complete record.
+
+```{r schools-importance-summary}
+pooling_A <- function(tau) school_s2[["A"]] / (school_s2[["A"]] + tau^2)
+contrast_probability <- function(tau, first, second, threshold = 0) {
+  g <- school_means_conditional(tau, school_y, school_s2, 0, 400)
+  cols <- match(c(first, second), names(school_y))
+  a <- cols[1]
+  b <- cols[2]
+  mean_diff <- g$m_school[, a] - g$m_school[, b]
+  var_diff <- g$d[, a] + g$d[, b] + (g$w[, a] - g$w[, b])^2 * g$v
+  pnorm(threshold, mean_diff, sqrt(var_diff), lower.tail = FALSE)
+}
+
+school_truth <- c(tail = tail_reference,
+                   pooling = scale_integral(pooling_A) / scale_norm,
+                   comparison = scale_integral(function(t) {
+                     contrast_probability(t, "G", "A")
+                   }) / scale_norm)
+school_summaries <- lapply(school_samples, function(x) {
+  h <- cbind(tail = x$tau > 10, pooling = pooling_A(x$tau),
+             comparison = x$theta[, "G"] > x$theta[, "A"])
+  weighted_summary(h, x$weights)
+})
+
+table_school <- data.frame(
+  summary = c("Pr(tau > 10)", "Mean pooling weight for A", "Pr(effect G > effect A)"),
+  quadrature = unname(school_truth),
+  narrow = unname(school_summaries$Narrow["estimate", ]),
+  narrow_MCSE = unname(school_summaries$Narrow["MCSE", ]),
+  broad = unname(school_summaries$Broad["estimate", ]),
+  broad_MCSE = unname(school_summaries$Broad["MCSE", ])
+)
+stopifnot(max(abs(school_truth - c(.169870, .7725, .4785))) < 5e-5,
+          all(vapply(school_summaries, function(result) {
+            all(abs(result["estimate", ] - school_truth) < 4 * result["MCSE", ])
+          }, logical(1))))
+weight_ess <- function(weights) 1 / sum(weights^2)
+knitr::kable(table_school, digits = 4)
+vapply(school_samples, function(x) weight_ess(x$weights), numeric(1))
+```
+
+A weighted empirical CDF sums the masses of draws at or below each
+threshold. To find its quantiles, sort the records by the value of interest
+and invert the cumulative masses by first crossing, as in Section 6.1.
+
+```{r schools-weighted-quantiles}
+weighted_quantile <- function(x, weights, probs) {
+  ordered <- order(x)
+  cumulative <- cumsum(weights[ordered])
+  cumulative[length(cumulative)] <- 1
+  vapply(probs, function(p) x[ordered[which(cumulative >= p)[1]]], numeric(1))
+}
+broad <- school_samples$Broad
+cdf_at_10 <- c(equal_masses = mean(broad$tau <= 10),
+               weighted = sum(broad$weights[broad$tau <= 10]),
+               quadrature = 1 - tail_reference)
+interval_tau <- weighted_quantile(broad$tau, broad$weights, c(.025, .975))
+cdf_at_10
+setNames(interval_tau, c("2.5%", "97.5%"))
+```
+
+```{r schools-weighted-cdf-figure, echo=FALSE, out.width="100%", fig.cap="Lecture notes, Section 6.3. Weighting corrects the proposal CDF. The vertical line marks the tail-probability threshold."}
+notes_figure("section6-rubin-weighted-cdf.png")
+```
+
+```{r schools-joint-cloud, echo=FALSE, out.width="70%", fig.cap="Lecture notes, Section 6.3. Dot area represents importance mass. The event G > A lies above the diagonal."}
+notes_figure("section6-rubin-joint-cloud.png")
+```
+
+The broad proposal lowers the MCSE of the scale summaries in this
+run. The gain is smaller for the comparison of effects, which also
+varies with the conditional Normal draws at each scale.
+
+## Light tails and missed modes
+
+**Concept.** Accuracy depends on the contributions for the particular
+estimand. Self-normalization uses weights from the entire proposal
+sample. The weights observed in one run may provide little information
+about regions the proposal missed.
+
+**Example.** Estimate the Cauchy probability of $[-1,1]$ using a standard
+Normal proposal. For ordinary importance sampling, the squared weights
+matter only on $[-1,1]$. For the self-normalized estimator, the
+squared centered indicator is $1/4$ both inside and outside that interval.
+
+Integrate the two second-moment expressions on successively wider
+intervals. The ordinary contribution's variance is the first
+second moment minus $1/4$. The SNIS asymptotic variance integral
+keeps growing because its integrand is proportional to
+$e^{x^2/2}/(1+x^2)^2$ in the tails.
+
+```{r cauchy-tail-check, fig.cap="The ordinary variance is finite. The truncated SNIS variance integral grows as more of the tails enter the calculation."}
+squared_weight_density <- function(x) {
+  exp(2 * dcauchy(x, log = TRUE) - dnorm(x, log = TRUE))
+}
+radii <- seq(1, 8, by = .25)
+ordinary_var <- quad(squared_weight_density, -1, 1) - .25
+truncated_var <- vapply(radii, function(r) {
+  quad(squared_weight_density, -r, r) / 4
+}, numeric(1))
+knitr::kable(data.frame(radius = radii[c(1, 9, 21, 29)],
+                        ordinary = ordinary_var,
+                        SNIS_truncated = truncated_var[c(1, 9, 21, 29)]))
+plot(radii, truncated_var, type = "l", log = "y", lwd = 2,
+     col = "#D55E00", xlab = "Integration radius", ylab = "Variance integral")
+abline(h = ordinary_var, lty = 2, col = "#0072B2", lwd = 2)
+legend("topleft", c("SNIS, truncated", "Ordinary"), lty = 1:2,
+       col = c("#D55E00", "#0072B2"), lwd = 2, bty = "n")
+```
+
+**Example.** Now give the target two equally weighted Normal components
+centered at $-8$ and $8$, each with unit variance. Compare a proposal
+centered at $-8$ with a proposal covering both modes. For the left proposal,
+$\pi/q=(1+\exp(16x))/2$. Evaluate its logarithm using `softplus()`
+and report the observed right-mode visits, weight ESS, and mean.
+
+```{r missed-mode-diagnostic}
+set.seed(63061)
+n_mode <- 2000L
+left_sample <- rnorm(n_mode, -8)
+left_weights <- normalize_weights(softplus(16 * left_sample) - log(2))
+balanced_sample <- rnorm(n_mode, ifelse(runif(n_mode) < .5, -8, 8))
+mode_results <- rbind(
+  left = weighted_summary(left_sample, left_weights)[, 1],
+  balanced = weighted_summary(balanced_sample, rep(1 / n_mode, n_mode))[, 1]
+)
+knitr::kable(cbind(mode_results, weight_ESS = c(weight_ess(left_weights), n_mode),
+                   right_visits = c(sum(left_sample > 0), sum(balanced_sample > 0))),
+             digits = 4)
+```
+
+```{r missed-mode-figure, echo=FALSE, out.width="100%", fig.cap="Course figure for Section 6.3. Even a proposal positive on the whole real line can miss an important mode at a finite budget."}
+notes_figure("section63-missed-mode.png")
+```
+
+In the left-proposal run, nearly equal weights make the observed ESS
+large. The estimate is close to the left mode, while the true mean is
+zero. A small estimated MCSE cannot detect missing contributions.
+
+## Reweighting and resampling school records
+
+**Concept.** If the likelihood stays fixed, changing a prior multiplies
+the old weights by the prior ratio. Resampling draws from the resulting
+weighted empirical distribution and adds conditional Monte Carlo error.
+
+**Example.** Lower the inverse-gamma scale from 200 to 50 to favor more
+pooling. Compare $\Pr(\theta_A-\theta_E>10\mid\mathbf y)$ under both priors.
+Then resample under the revised weights and compare the resampled
+fraction with the fraction calculated directly from those weights.
+
+Keep the original joint records. Add $\log p_{50}(\tau)-\log p_{200}(\tau)$
+to their log weights. Calculate the probability using both the sampled
+indicator and the conditional Normal exceedance probability. The latter
+averages out the variation due to drawing the effects at each scale.
+
+```{r schools-prior-reweighting, fig.cap="Conditional averaging integrates out the school effects at each scale. The bars show two MCSEs around the weighted estimate, and the crosses mark quadrature benchmarks."}
+set.seed(63073)
+sensitivity <- sample_school_records(1.5, 4000L)
+revised <- normalize_weights(sensitivity$log_weights +
+  log_scale_prior(sensitivity$tau, 50) - log_scale_prior(sensitivity$tau, 200))
+difference <- sensitivity$theta[, "A"] - sensitivity$theta[, "E"]
+h_AE <- function(tau) contrast_probability(tau, "A", "E", threshold = 10)
+h_compare <- cbind(indicator = difference > 10,
+                   conditional = h_AE(sensitivity$tau))
+priors <- list(baseline = sensitivity$weights, revised = revised)
+reference_AE <- vapply(c(200, 50), function(b) {
+  scale_integral(h_AE, b = b) / scale_integral(ones, b = b)
+}, numeric(1))
+sensitivity_table <- t(vapply(priors, function(w) {
+  as.vector(weighted_summary(h_compare, w))
+}, numeric(4)))
+colnames(sensitivity_table) <- c("Indicator", "Indicator MCSE",
+                                 "Conditional", "Conditional MCSE")
+knitr::kable(cbind(quadrature = reference_AE, sensitivity_table,
+                   weight_ESS = vapply(priors, weight_ess, numeric(1))), digits = 4)
+
+set.seed(63074)
+resampled <- sample.int(length(revised), 4000L, replace = TRUE, prob = revised)
+weighted_event <- sensitivity_table["revised", "Indicator"]
+c(weighted = unname(weighted_event), resampled = mean(difference[resampled] > 10),
+  extra_MCSE = sqrt(weighted_event * (1 - weighted_event) / length(resampled)))
+
+centers <- sensitivity_table[, "Conditional"]
+half_width <- 2 * sensitivity_table[, "Conditional MCSE"]
+plot(1:2, centers, ylim = range(centers - half_width, centers + half_width,
+                               reference_AE), xlim = c(.7, 2.3),
+     xaxt = "n", xlab = "Inverse-gamma scale", ylab = "Pr(effect A - effect E > 10)",
+     pch = 19, col = "#0072B2")
+axis(1, 1:2, c(200, 50))
+segments(1:2, centers - half_width, 1:2, centers + half_width,
+         col = "#0072B2", lwd = 2)
+points(1:2, reference_AE, pch = 4, col = "#D55E00", cex = 1.4)
+```
+
+Increasing the resample size reduces the extra MCSE shown above. It
+does not improve the original weighted approximation. For a probability
+calculation, the weighted fraction is available directly.
+
+## Sequential weights under repeated mismatch
+
+**Concept.** When a proposed record is built one coordinate at a time,
+its weight multiplies by a new density ratio at each step. Modest
+mismatch in each coordinate can add up.
+
+**Example.** Propose independent standard Normal coordinates. The target
+shifts each coordinate's mean to $0.4$, keeping its variance one.
+For a record of length $d$, the limiting weight ESS fraction is
+$\exp(-0.4^2d)$.
+
+Draw one new coordinate per record at each step and add its log ratio
+$0.4x-0.4^2/2$ to the record's log weight. Renormalize for the ESS
+calculation and compare the observed fraction with the fixed-dimension
+limit.
+
+```{r sequential-shift, fig.cap="A small proposal shift in each coordinate accumulates as the record grows."}
+set.seed(63076)
+n_path <- 20000L
+shift <- .4
+steps <- 1:20
+path_log_weights <- numeric(n_path)
+ess_fraction <- numeric(length(steps))
+for (i in steps) {
+  next_coordinate <- rnorm(n_path)
+  path_log_weights <- path_log_weights + shift * next_coordinate - shift^2 / 2
+  ess_fraction[i] <- weight_ess(normalize_weights(path_log_weights)) / n_path
+}
+limiting_fraction <- exp(-shift^2 * steps)
+show <- c(1, 5, 10, 20)
+knitr::kable(data.frame(d = steps[show], observed = ess_fraction[show],
+                        limit = limiting_fraction[show]), digits = 4)
+plot(steps, limiting_fraction, type = "l", lwd = 2, col = "#0072B2",
+     xlab = "Coordinates in each record", ylab = "Weight ESS fraction",
+     ylim = c(0, 1))
+points(steps, ess_fraction, pch = 19, col = "#D55E00")
+legend("topright", c("Limit", "Observed"), lty = c(1, NA), pch = c(NA, 19),
+       col = c("#0072B2", "#D55E00"), lwd = 2, bty = "n")
+```
+
+## Annealed importance sampling
+
+**Concept.** Annealed importance sampling changes the target along a
+sequence of distributions on the same space. Evaluate each weight
+increment before moving the record with a transition that preserves
+the new intermediate target.
+
+**Example.** For the 12 daily counts, let a Poisson likelihood replace
+the negative-binomial likelihood used in Section 6.2. Use the same
+$\operatorname{Gamma}(2,1)$ prior. Under a likelihood power $\beta$,
+the intermediate target is exactly
+$\operatorname{Gamma}(2+28\beta,1+12\beta)$. That gives an exact
+invariant move, so this example can isolate the order of weighting
+and moving.
+
+Start each record with one prior rate. At each step, add the power
+increment times the log likelihood at the current rate, then refresh
+the rate from the new intermediate target. For one step, the raw
+weights are just the prior importance weights. Compare the evidence
+and weight ESS with a five-step schedule and with the exact
+Gamma–Poisson evidence. For the log evidence, divide the MCSE of
+the mean weight by the mean weight, using the delta method.
+
+```{r annealed-evidence, fig.cap="In this conjugate illustration, an exact refresh at each intermediate target reduces the concentration of the evidence weights."}
+count_log_poisson <- function(lambda) {
+  total * log(lambda) - length(counts) * lambda - sum(lfactorial(counts))
+}
+anneal <- function(powers, n) {
+  lambda <- rgamma(n, 2, rate = 1)
+  log_weights <- numeric(n)
+  for (i in seq_len(length(powers) - 1L)) {
+    next_power <- powers[i + 1L]
+    log_weights <- log_weights +
+      (next_power - powers[i]) * count_log_poisson(lambda)
+    lambda <- rgamma(n, 2 + next_power * total,
+                      rate = 1 + next_power * length(counts))
+  }
+  log_shift <- max(log_weights)
+  shifted <- exp(log_weights - log_shift)
+  c(log_evidence = log_shift + log(mean(shifted)),
+    log_evidence_MCSE = sd(shifted) / (sqrt(n) * mean(shifted)),
+    weight_ESS = weight_ess(normalize_weights(log_weights)))
+}
+set.seed(63075)
+anneal_results <- rbind(one_step = anneal(c(0, 1), 10000L),
+                        five_steps = anneal(seq(0, 1, by = .2), 10000L))
+poisson_exact <- lgamma(2 + total) - lgamma(2) -
+  (2 + total) * log(1 + length(counts)) - sum(lfactorial(counts))
+knitr::kable(cbind(anneal_results, exact_log_evidence = poisson_exact), digits = 4)
+barplot(anneal_results[, "weight_ESS"], names.arg = c("One step", "Five steps"),
+        col = c("#D55E00", "#0072B2"), ylim = c(0, 10000),
+        ylab = "Weight ESS out of 10,000")
+```
+
+The schedules use the same number of independent paths and different
+numbers of intermediate draws. ESS alone does not account for that cost.
+This conjugate model is a check on the algorithm; in the logistic model
+the intermediate laws typically require transitions that preserve the
+tempered target.
+
+**Try next.** In Section 6.1, refine the grid and then double the
+inversion sample size. Compare their effects on CDF error and the MCSE.
+In Section 6.2, simulate with the valid loose bound and check both its
+acceptance rate and posterior mean. In Section 6.3, use the narrow
+proposal to reweight the school prior and compare its MCSE against the
+broad proposal for the same contrast.
+
+R `r getRversion()` · BayesComp `r utils::packageVersion('BayesComp')`
