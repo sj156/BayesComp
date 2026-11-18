@@ -1,0 +1,192 @@
+---
+title: "Chapter 2 — One-parameter Models"
+subtitle: "STA5001 R Computational Companion"
+author: "STA5001 Bayesian & Computational Statistics"
+output:
+  html_document:
+    toc: true
+    toc_depth: 3
+    number_sections: false
+    code_folding: show
+    code_download: true
+    self_contained: true
+    math_method: mathml
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = TRUE, message = FALSE,
+                      fig.width = 7, fig.height = 4, digits = 4)
+notes_figure <- function(file) {
+  knitr::include_graphics(system.file("figures", file, package = "BayesComp",
+                                      mustWork = TRUE))
+}
+```
+
+Work through the examples in order. Section numbers follow the STA5001
+lecture notes, which develop the models and algorithms used here. Open
+`chapter-02.Rmd` in RStudio and choose **Knit** to reproduce the outputs.
+Install BayesComp with `remotes::install_github("sj156/BayesComp")`
+to use the lecture-note figures included in this chapter.
+
+# Section 2.1 — Binary inference and credible-set calibration
+
+**Concept.** Beta conjugacy converts successes and failures into updated shape
+parameters. A posterior density supports several point summaries
+and credible intervals.
+
+**Example.** A laboratory observes seven passes in twenty trials.
+A `Beta(2,8)` prior gives a `Beta(9,21)` posterior.
+
+Compute the posterior summaries and an equal-tailed interval. For the
+shortest interval, optimize where to put the lower endpoint while
+holding posterior mass fixed at 95%.
+
+```{r s21-beta-update}
+s21_a0 <- 2; s21_b0 <- 8; s21_n <- 20; s21_passes <- 7
+s21_an <- s21_a0+s21_passes
+s21_bn <- s21_b0+s21_n-s21_passes
+c(mean=s21_an/(s21_an+s21_bn),
+ median=qbeta(.5,s21_an,s21_bn),
+ mode=(s21_an-1)/(s21_an+s21_bn-2),
+ asymmetric_loss_action=qbeta(.8,s21_an,s21_bn))
+s21_equal_tail <- qbeta(c(.025,.975),s21_an,s21_bn)
+# Shortest 95% interval for this unimodal density.
+s21_width <- function(u) diff(qbeta(c(u,u+.95),s21_an,s21_bn))
+s21_lower_mass <- optimize(s21_width,c(0,.05))$minimum
+s21_hpd <- qbeta(c(s21_lower_mass,s21_lower_mass+.95),s21_an,s21_bn)
+rbind(equal_tail=s21_equal_tail, HPD=s21_hpd)
+stopifnot(abs(diff(pbeta(s21_hpd,s21_an,s21_bn))-.95)<1e-10)
+```
+
+```{r s21-lecture-update, echo=FALSE, out.width="100%", fig.cap="Lecture notes, Section 2.1. Panel A shows the update calculated above."}
+notes_figure("section2-beta-update.png")
+```
+
+## Credible-set calibration
+
+**Concept.** Coverage at a fixed true rate averages over repeated
+samples. Prior average coverage also averages over the rate.
+
+**Example.** Use ten trials and a uniform prior. There are eleven
+possible reported 90% equal-tailed intervals.
+
+Find the interval for each possible count. At any true rate, sum the
+binomial probabilities of the counts whose intervals contain it.
+
+```{r s21-coverage}
+s21_s <- 0:10
+s21_lo <- qbeta(.05,s21_s+1,11-s21_s)
+s21_hi <- qbeta(.95,s21_s+1,11-s21_s)
+s21_coverage <- function(theta) sum(dbinom(s21_s,10,theta)*
+                                      (s21_lo<=theta & theta<=s21_hi))
+s21_average <- sum((pbeta(s21_hi,s21_s+1,11-s21_s)-
+                    pbeta(s21_lo,s21_s+1,11-s21_s))/11)
+c(at_0.1=s21_coverage(.1),at_0.5=s21_coverage(.5),prior_average=s21_average)
+stopifnot(abs(s21_average-.9)<1e-12)
+```
+
+```{r s21-lecture-coverage, echo=FALSE, out.width="100%", fig.cap="Lecture notes, Section 2.1. Coverage changes with the true rate even though its prior average is 0.90."}
+notes_figure("section12-coverage.png")
+```
+
+Posterior probability and fixed-parameter coverage answer different
+questions. **Extension:** repeat this calculation under `Beta(2,8)` and
+verify the average using that prior, rather than a uniform average.
+
+# Section 2.2 — Incident rates, exposure, and prediction
+
+**Concept.** Counts update the Gamma shape and total exposure updates the rate.
+A future count mixes Poisson probabilities over the updated Gamma law.
+
+**Example.** Observe eight daily incident counts, each with one day of
+exposure. Use a Gamma prior with shape and **rate** both equal to 2.
+
+Add the total count and exposure to the prior parameters. Convert the
+updated rate and future exposure to the success probability used by
+R's negative-binomial distribution.
+
+```{r s22-poisson}
+s22_counts <- c(1,0,3,2,1,4,2,3)
+knitr::kable(data.frame(day=1:8,incidents=s22_counts,exposure_days=1))
+s22_a0 <- 2; s22_b0 <- 2
+s22_an <- s22_a0+sum(s22_counts)
+s22_bn <- s22_b0+length(s22_counts)
+s22_future_exposure <- 1
+s22_prob <- s22_bn/(s22_bn+s22_future_exposure)
+c(posterior_mean=s22_an/s22_bn,
+ posterior_variance=s22_an/s22_bn^2,
+ predictive_mean=s22_future_exposure*s22_an/s22_bn,
+ predictive_variance=s22_future_exposure*s22_an/s22_bn+
+   s22_future_exposure^2*s22_an/s22_bn^2,
+ zero_probability=dnbinom(0,size=s22_an,prob=s22_prob))
+stopifnot(s22_an==18,s22_bn==10,
+ abs(dnbinom(0,size=s22_an,prob=s22_prob)-(10/11)^18)<1e-12)
+```
+
+The lecture figure uses ten future days to make the additional variance
+visible. Compute both predictive variances at the same expected count.
+
+```{r s22-ten-day}
+s22_ten_days <- 10
+s22_mean_ten <- s22_ten_days * s22_an / s22_bn
+s22_rate_uncertainty <- s22_ten_days^2 * s22_an / s22_bn^2
+c(mean = s22_mean_ten, plug_in_variance = s22_mean_ten,
+  predictive_variance = s22_mean_ten + s22_rate_uncertainty)
+```
+
+```{r s22-lecture-prediction, echo=FALSE, out.width="100%", fig.cap="Lecture notes, Section 2.2. Both ten-day forecasts have mean 18."}
+notes_figure("audit26-poisson-prediction.png")
+```
+
+The future count includes both Poisson variation and uncertain-rate
+variation. **Extension:** convert all exposures to hours. The hourly rate
+is the daily rate divided by 24; multiply the Gamma rate hyperparameters
+by 24 and verify unchanged prediction for one physical day.
+
+# Section 2.3 — Additive information in a natural conjugate family
+
+**Concept.** In a natural conjugate update, the sample adds sufficient
+statistics and sample size to the prior information coordinates.
+
+**Example.** Observe `(0,1,2)` with unit sampling variance and a normal
+prior centered at one with precision two.
+
+Add three units of precision and the sum of the observations. To check
+the evidence, compare direct numerical integration with the ratio of
+conjugate normalizers multiplied by the data's base-density term.
+
+```{r s23-natural-update}
+s23_x <- c(0,1,2)
+s23_k0 <- 2; s23_m0 <- 1
+s23_kn <- s23_k0+length(s23_x)
+s23_mn <- (s23_k0*s23_m0+sum(s23_x))/s23_kn
+c(posterior_mean=s23_mn,posterior_variance=1/s23_kn)
+# Integrate the normalized likelihood times prior to check evidence.
+s23_evidence <- integrate(function(mu) dnorm(mu,s23_m0,sqrt(1/s23_k0))*
+ exp(vapply(mu,function(m)sum(dnorm(s23_x,m,1,log=TRUE)),0.)),
+ -Inf,Inf)$value
+s23_logZ <- function(k,m) .5*log(2*pi/k)+k*m^2/2
+s23_logh <- sum(dnorm(s23_x,0,1,log=TRUE))
+s23_formula <- exp(s23_logh+s23_logZ(s23_kn,s23_mn)-
+                    s23_logZ(s23_k0,s23_m0))
+c(numerical_evidence=s23_evidence,normalizer_ratio=s23_formula)
+stopifnot(abs(s23_mn-1)<1e-12,
+ abs(s23_evidence-s23_formula)<1e-9)
+```
+
+```{r s23-density-visual}
+s23_mu <- seq(-1.5, 3.5, length.out = 401)
+s23_prior <- dnorm(s23_mu, s23_m0, 1 / sqrt(s23_k0))
+s23_posterior <- dnorm(s23_mu, s23_mn, 1 / sqrt(s23_kn))
+plot(s23_mu, s23_posterior, type = "l", col = "#0072B2", lwd = 2,
+     xlab = "Mean", ylab = "Density")
+lines(s23_mu, s23_prior, col = "grey35", lty = 2, lwd = 2)
+legend("topright", c("Posterior", "Prior"), col = c("#0072B2", "grey35"),
+       lty = c(1, 2), lwd = 2, bty = "n")
+```
+
+The evidence needs the base-density terms as well as the normalizer
+ratio. **Extension:** update sequentially with `(0)` and then `(1,2)`;
+reverse the batches and verify the same final information coordinates.
+
+R `r getRversion()` · BayesComp `r utils::packageVersion('BayesComp')`

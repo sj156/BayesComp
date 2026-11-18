@@ -1,0 +1,644 @@
+---
+title: "Chapter 3 — Univariate and Multivariate Normal Models"
+subtitle: "STA5001 R Computational Companion"
+author: "STA5001 Bayesian & Computational Statistics"
+output:
+  html_document:
+    toc: true
+    toc_depth: 3
+    number_sections: false
+    code_folding: show
+    code_download: true
+    self_contained: true
+    math_method: mathml
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = TRUE, message = FALSE,
+                      fig.width = 7, fig.height = 4, digits = 4)
+notes_figure <- function(file) {
+  knitr::include_graphics(system.file("figures", file, package = "BayesComp",
+                                      mustWork = TRUE))
+}
+```
+
+Work through the examples in order. Section numbers follow the STA5001
+lecture notes, which develop the models and algorithms used here. Open
+`chapter-03.Rmd` in RStudio and choose **Knit** to reproduce the outputs.
+Section 3.3 also uses BayesComp for the constructed school data and the
+shared Gaussian and quadrature calculations. The package also supplies
+figures from the lecture notes. Install it with
+`remotes::install_github("sj156/BayesComp")`.
+
+# Section 3.1 — Paired differences and exact Gaussian inference
+
+**Concept.** Pairing removes each subject's common level by working with
+within-subject differences. Prediction for another subject then
+includes variation between individual differences.
+
+## Data and inferential targets
+
+**Example.** `datasets::sleep` compares two drugs within each of ten subjects.
+The printed differences below are drug 2 minus drug 1, in hours. We compare
+uncertainty about the population mean difference with prediction for a new
+subject. The Gaussian model assumes independent subjects and normally
+distributed differences; these assumptions need scientific assessment.
+
+Reshape the original data by subject and check the printed differences.
+
+```{r paired-sleep-data}
+sleep_differences <- c(1.2, 2.4, 1.3, 1.3, 0, 1, 1.8, 0.8, 4.6, 1.4)
+sleep_wide <- reshape(datasets::sleep, idvar="ID", timevar="group",
+                      direction="wide")
+stopifnot(max(abs(sleep_differences -
+                 (sleep_wide$extra.2 - sleep_wide$extra.1))) < 1e-12)
+knitr::kable(data.frame(subject=1:10, difference_hours=sleep_differences))
+```
+
+Use the prior $\sigma^2\sim\operatorname{InvGam}(a_0,b_0)$,
+$\delta\mid\sigma^2\sim N(m_0,\sigma^2/k_0)$, with
+$(m_0,k_0,a_0,b_0)=(0,1,2,2)$. Here `b0` is the inverse-gamma scale,
+and the rate of the gamma law for precision.
+
+Update the normal–inverse-gamma parameters from the sample size, mean, and
+centered sum of squares. The two Student distributions share a location
+and degrees of freedom. Their scales differ by the individual variation.
+
+```{r paired-sleep-update}
+nig_update <- function(x, m0=0, k0=1, a0=2, b0=2) {
+  stopifnot(length(x)>0, all(is.finite(x)), k0>0, a0>0, b0>0)
+  n <- length(x); xbar <- mean(x); q <- sum((x-xbar)^2)
+  kn <- k0+n
+  list(n=n, xbar=xbar, q=q, kn=kn, mn=(k0*m0+n*xbar)/kn,
+       an=a0+n/2, bn=b0+.5*(q+k0*n/kn*(xbar-m0)^2))
+}
+sleep_post <- nig_update(sleep_differences)
+unlist(sleep_post)
+sleep_df <- 2*sleep_post$an
+sleep_mean_scale <- sqrt(sleep_post$bn/(sleep_post$an*sleep_post$kn))
+sleep_pred_scale <- sqrt(sleep_post$bn/sleep_post$an*(1+1/sleep_post$kn))
+sleep_exact <- c(mean_positive=pt(sleep_post$mn/sleep_mean_scale,sleep_df),
+                future_positive=pt(sleep_post$mn/sleep_pred_scale,sleep_df))
+sleep_exact
+sleep_post$mn + qt(c(.025,.975),sleep_df)*sleep_mean_scale
+stopifnot(abs(sleep_post$xbar-1.58)<1e-12,
+          abs(sleep_post$q-13.616)<1e-10)
+```
+
+The mean difference has about 99.93% posterior probability of being positive,
+while a new subject has about 86.61% predictive probability of a positive
+difference. The mean's 95% credible interval is approximately [0.666, 2.207]
+hours. These are different inferential questions.
+
+## Composition sampling and accuracy
+
+This implements the composition algorithm in Subsection 3.1. Each mean draw
+uses the variance drawn in the same repetition. Entire repetitions are
+independent; their two parameter coordinates need not be independent.
+
+```{r paired-sleep-composition}
+set.seed(3101)
+sleep_r <- 50000
+sleep_sigma2 <- 1/rgamma(sleep_r, shape=sleep_post$an, rate=sleep_post$bn)
+sleep_delta <- rnorm(sleep_r, sleep_post$mn, sqrt(sleep_sigma2/sleep_post$kn))
+sleep_future <- rnorm(sleep_r, sleep_delta, sqrt(sleep_sigma2))
+sleep_indicators <- cbind(mean_positive=sleep_delta>0,
+                          future_positive=sleep_future>0)
+sleep_est <- colMeans(sleep_indicators)
+sleep_mcse <- sqrt(sleep_est*(1-sleep_est)/sleep_r)
+knitr::kable(data.frame(target=names(sleep_exact), exact=sleep_exact,
+                       simulation=sleep_est, MCSE=sleep_mcse,
+                       error_in_MCSE=(sleep_est-sleep_exact)/sleep_mcse),digits=5)
+stopifnot(all(abs(sleep_est-sleep_exact)<6*sleep_mcse+1/sleep_r))
+```
+
+```{r paired-sleep-densities, echo=FALSE, out.width="100%", fig.cap="Lecture notes, Section 3.1. Shaded tails show the probabilities of a nonpositive difference."}
+notes_figure("section31-sleep-inference.png")
+```
+
+**Extension.** Refit with `k0=4`, then with `m0=1.58`, leaving the other
+hyperparameters fixed. Compare the change in `bn` and both probabilities.
+Treat the latter as a sensitivity calculation, not independent prior evidence
+learned before these same data were observed.
+
+# Section 3.2 — Equal prior moments, different posterior conclusions
+
+**Concept.** A prior's mean and variance can leave important features of its
+shape unspecified. In Gaussian denoising, separated prior masses and
+a continuous prior can give very different posterior adjustments.
+
+**Example.** Compare a $N(0,4)$ prior with a prior putting probability one-half on each
+of $-2$ and $2$, under $Y\mid\mu\sim N(\mu,1)$. Both priors have mean
+zero and variance four. The discrete prior's posterior can be computed
+exactly by Bayes' rule; no Monte Carlo is needed.
+
+Convert the log odds for the two signals to a probability and calculate
+its implied posterior moments. Differentiate the marginal density
+to check those moments using Tweedie's formula.
+
+```{r tweedie-exact-comparison}
+tweedie_y <- seq(-4,4,length.out=801)
+tweedie_weight <- plogis(4*tweedie_y)
+tweedie_mean <- 4*tweedie_weight-2
+tweedie_var <- 16*tweedie_weight*(1-tweedie_weight)
+stopifnot(max(abs(tweedie_mean-2*tanh(2*tweedie_y)))<1e-12)
+# Check Tweedie's derivatives directly from the two Gaussian components.
+tweedie_marginal <- .5*dnorm(tweedie_y+2)+.5*dnorm(tweedie_y-2)
+tweedie_first <- -.5*(tweedie_y+2)*dnorm(tweedie_y+2) -
+                  .5*(tweedie_y-2)*dnorm(tweedie_y-2)
+tweedie_second <- .5*((tweedie_y+2)^2-1)*dnorm(tweedie_y+2) +
+                   .5*((tweedie_y-2)^2-1)*dnorm(tweedie_y-2)
+tweedie_score <- tweedie_first/tweedie_marginal
+tweedie_curvature <- tweedie_second/tweedie_marginal-tweedie_score^2
+stopifnot(max(abs(tweedie_y+tweedie_score-tweedie_mean))<1e-10,
+          max(abs(1+tweedie_curvature-tweedie_var))<1e-10)
+knitr::kable(data.frame(y=c(0,1),
+  normal_mean=.8*c(0,1), two_point_mean=2*tanh(2*c(0,1)),
+  normal_variance=.8, two_point_variance=4*(1-tanh(2*c(0,1))^2)),digits=4)
+```
+
+```{r tweedie-paired-plots, echo=FALSE, out.width="100%", fig.cap="Lecture notes, Section 3.2. The two prior shapes give very different posterior variances near zero."}
+notes_figure("section32-tweedie-comparison.png")
+```
+
+At zero, both posterior means are zero, but the discrete prior leaves equal
+probability on two separated signals and posterior variance four. At one,
+its posterior mean is about 1.928: the adjustment goes toward the nearby
+signal, rather than toward the prior mean. A denoised mean need not itself
+be a plausible signal under a discrete prior.
+
+**Extension.** Replace the equal masses by probabilities 0.2 and 0.8.
+Derive the new log posterior odds and plot the resulting mean and variance.
+Locate the observation at which the two signals are equally probable.
+
+# Section 3.3 — Hierarchical Gaussian school means
+
+**Concept.** Partial pooling uses a common center and between-school scale to
+share information across schools. The data inform both quantities,
+and integrating over them preserves uncertainty in school effects.
+
+## Question, data, and model
+
+**Example.** Use six constructed schools with sample sizes from 5 to
+160. We estimate their means, compare schools, and predict for a new
+school or individual student.
+
+| School | Students sampled | Observed mean | Sampling variance of the mean |
+|:--|--:|--:|--:|
+| A | 5 | 58 | 20 |
+| B | 10 | 82 | 10 |
+| C | 20 | 62 | 5 |
+| D | 40 | 78 | 2.5 |
+| E | 80 | 68 | 1.25 |
+| F | 160 | 74 | 0.625 |
+
+Use $Y_j \mid \theta_j \sim N(\theta_j,100/n_j)$,
+$\theta_j \mid \eta,\tau \sim N(\eta,\tau^2)$,
+$\eta \sim N(70,100)$, and $\tau^2 \sim \operatorname{InvGam}(3,200)$,
+independently a priori. Here $N(m,v)$ uses variance $v$, and the inverse-gamma
+density is proportional to $u^{-a-1}\exp(-b/u)$ for $u>0$.
+The known within-school variance is 100. The displayed summaries suffice for
+this likelihood; individual scores would not add information about school
+means under that assumption.
+
+## 1. Conditional Gaussian calculations
+
+At each scale $\tau$, Gaussian updating gives the posterior mean and variance
+of the shared center. Write $V_j=\tau^2+s_j^2$, where $s_j^2=100/n_j$. The
+center's posterior variance is $v=(1/v_0+\sum_j 1/V_j)^{-1}$ and its mean is
+$m=v(m_0/v_0+\sum_j y_j/V_j)$. The weight on school $j$'s observed mean is
+$w_j=\tau^2/V_j$. For one value of $\tau$, the steps are
+
+```{r schools-conditional}
+library(BayesComp)
+data("school_means", package = "BayesComp")
+
+y <- school_means$observed_mean
+n <- school_means$n
+schools <- school_means$school
+J <- length(y)
+sigma2 <- 100
+s2 <- sigma2 / n
+m0 <- 70
+v0 <- 100
+a0 <- 3
+b0 <- 200
+
+tau_example <- 8
+V <- tau_example^2 + s2
+v <- 1 / (1 / v0 + sum(1 / V))
+m <- v * (m0 / v0 + sum(y / V))
+w <- tau_example^2 / V
+m_school <- w * y + (1 - w) * m
+d <- w * s2
+var_school <- d + (1 - w)^2 * v
+
+check <- school_means_conditional(tau_example, y, s2, m0, v0)
+stopifnot(isTRUE(all.equal(m_school, drop(check$m_school))),
+          isTRUE(all.equal(var_school, drop(check$var))))
+data.frame(school = schools, weight_on_data = w, mean = m_school,
+           sd = sqrt(var_school))
+```
+
+The package applies the same update to a vector of scales. Its matrices
+have one row per scale and one column per school. The conditional variance
+`d` is given both the center and scale. The variance `var` integrates out the
+center and therefore includes its uncertainty.
+
+## 2. Marginal scale posterior
+
+Integrate out the school means and center analytically, leaving one positive
+scale. Define the prior on $\tau$ explicitly. The change of variables from
+$\tau^2$ to $\tau$ contributes the Jacobian $2\tau$. The package combines
+this prior with the marginal likelihood and applies the trapezoidal rule
+with spacing 0.005 and upper limit 120. The normalized quadrature weights
+are used for posterior summaries and the cumulative integral for simulation.
+
+```{r schools-scale-grid}
+log_prior <- function(tau, shape = a0, scale = b0) {
+  ans <- rep(-Inf, length(tau))
+  positive <- tau > 0
+  t <- tau[positive]
+  ans[positive] <- log(2) + shape * log(scale) - lgamma(shape) -
+    (2 * shape + 1) * log(t) - scale / t^2
+  ans
+}
+
+g <- school_means_grid(y, s2, m0, v0, log_prior)
+```
+
+## 3. Summaries and numerical accuracy
+
+A school's marginal posterior is a mixture of normals across the scale grid.
+Invert that mixture CDF for credible intervals. The root bracket [0,140]
+contains the requested quantiles for these data; adapt it if the score scale
+changes. Refine grid spacing and extend the range separately. The assertions
+below stop rendering if the stated tolerances fail.
+
+```{r schools-summaries}
+means <- function(g) colSums(g$conditional$m_school*g$weights)
+qmix <- function(j, prob) {
+  uniroot(function(x) {
+    sum(g$weights*pnorm(x, g$conditional$m_school[,j], sqrt(g$conditional$var[,j]))) - prob
+  }, c(0,140))$root
+}
+lo <- sapply(1:J, qmix, prob=.025)
+hi <- sapply(1:J, qmix, prob=.975)
+cbind(n=n, observed=y, posterior=means(g), lo=lo, hi=hi)
+contrast <- function(g) {
+  delta <- g$conditional$m_school[,2] - g$conditional$m_school[,1]
+  v <- g$conditional$d[,1] + g$conditional$d[,2] +
+    (g$conditional$w[,1]-g$conditional$w[,2])^2*g$conditional$v
+  sum(g$weights*pnorm((delta-5)/sqrt(v)))
+}
+g_fine <- school_means_grid(y, s2, m0, v0, log_prior, n_grid = 48001L)
+g_wide <- school_means_grid(y, s2, m0, v0, log_prior,
+                            upper = 240, n_grid = 48001L)
+stopifnot(max(abs(means(g)-means(g_fine))) < 1e-6,
+          max(abs(means(g)-means(g_wide))) < 1e-6,
+          abs(contrast(g)-contrast(g_fine)) < 1e-6,
+          abs(contrast(g)-contrast(g_wide)) < 1e-6)
+f <- function(t) {
+  exp(log_prior(t) + school_means_log_likelihood(t, y, s2, m0, v0) -
+        g$log_shift)
+}
+tailmass <- integrate(f, 120, Inf)$value /
+            integrate(f, 0, Inf)$value
+stopifnot(tailmass < 1e-8)
+c(E_tau=sum(g$tau*g$weights), contrast=contrast(g), tail=tailmass)
+```
+
+```{r schools-table, echo=FALSE}
+knitr::kable(data.frame(School=schools, n=n, Observed=y,
+                       Posterior=means(g), Lower=lo, Upper=hi), digits=2,
+             caption="School means and 95% equal-tailed credible intervals")
+```
+
+The posterior mean of $\tau$ is about 8.8324. The probability that school B's
+mean exceeds A's by more than five points is about 0.99826. The estimated omitted tail
+mass is about $1.84\times10^{-12}$. Small integration error does not establish
+that the model assumptions are appropriate.
+
+```{r schools-interval-plot, echo=FALSE, out.width="100%", fig.cap="Earlier lecture notes, Section 3.3. This figure uses the six constructed schools in the companion."}
+notes_figure("section3-school-posterior.png")
+```
+
+Intervals describe uncertainty about school means, not the spread of individual
+student scores. School A moves toward the shared center more than school F.
+
+## 4. Joint posterior draws and prediction
+
+Each row uses one scale and one shared center for all schools. This preserves
+dependence for joint comparisons and rankings. The grid inverse CDF is a
+numerical approximation; conditional normal sampling is exact. With fresh
+randomness across rows there is no Markov-chain burn-in or mixing problem.
+
+```{r schools-joint-draws}
+set.seed(33022); S <- 100000
+keep <- !duplicated(g$cdf)
+tau <- approx(g$cdf[keep], g$tau[keep],
+              xout=runif(S), rule=2)$y
+p <- school_means_conditional(tau, y, s2, m0, v0)
+eta <- rnorm(S, p$m, sqrt(p$v))
+theta <- p$w*matrix(rep(y, each=S), nrow=S) +
+  (1-p$w)*eta + matrix(rnorm(S*J), S)*sqrt(p$d)
+newmean <- rnorm(S, eta, tau)
+newstudent <- rnorm(S, newmean, sqrt(sigma2))
+in_A <- rnorm(S, theta[,1], sqrt(sigma2))
+joint <- mean(theta[,2]-theta[,1] > 5 &
+              theta[,4]-theta[,3] > 5)
+mcse <- sqrt(joint*(1-joint)/S)
+best <- tabulate(max.col(theta), nbins=J)/S
+c(joint=joint, MCSE=mcse)
+best  # posterior probability each school has the largest mean
+c(existing_student=sd(in_A), new_school=sd(newmean),
+  new_school_student=sd(newstudent))
+```
+
+With seed 33022 and 100,000 draws, the joint contrast probability is 0.99819
+with Monte Carlo standard error about 0.000134. Predictive standard deviations
+are approximately 10.8 for a student in school A, 9.8 for a new school's mean,
+and 14.0 for a student in that new school. These are three distinct targets.
+
+Plot the three simulated predictive distributions on a common score axis.
+Each curve corresponds to a different prediction target.
+
+```{r schools-prediction-plot}
+curves <- list(density(in_A), density(newmean), density(newstudent))
+plot(curves[[1]], xlim=range(vapply(curves, function(d) range(d$x),
+                                  numeric(2))),
+     ylim=c(0,max(vapply(curves, function(d) max(d$y), numeric(1)))),
+     xlab="Score or school mean", main="Three predictive targets", lwd=2)
+lines(curves[[2]], col="steelblue", lwd=2, lty=2)
+lines(curves[[3]], col="darkorange", lwd=2, lty=3)
+legend("topright", c("Student in school A", "New school mean", "New-school student"),
+       col=c("black","steelblue","darkorange"), lty=1:3, lwd=2, bty="n")
+```
+
+## 5. Prior sensitivity: an extension to try
+
+Repeat the grid, summaries, and simulation with inverse-gamma scale 50 and
+800, keeping the shape at 3. Then try a half-normal prior on the
+between-school standard deviation with scale 10. For each alternative, use
+the resulting grid in place of `g` and repeat the numerical checks with
+the corresponding log prior.
+
+```{r schools-prior-alternatives, eval=FALSE}
+grid_ig50 <- school_means_grid(y, s2, m0, v0,
+                               function(tau) log_prior(tau, scale = 50))
+grid_ig800 <- school_means_grid(y, s2, m0, v0,
+                                function(tau) log_prior(tau, scale = 800))
+half_normal <- function(tau) log(2) + dnorm(tau, sd = 10, log = TRUE)
+grid_half_normal <- school_means_grid(y, s2, m0, v0, half_normal)
+```
+
+Compare school A's interval, the scale posterior, and the three predictive
+distributions. Increasing the draw count reduces Monte Carlo error. The
+comparison across priors measures sensitivity to the model specification.
+
+# Section 3.4 — Gaussian geometry and exact simulation
+
+**Concept.** A covariance factor maps independent standard normals to correlated
+normals. Its inverse maps a Gaussian probability ellipse to a circle.
+
+**Example.** Generate a bivariate Gaussian with $\boldsymbol\mu=(1,-1)^\top$ and
+$\Sigma=\begin{pmatrix}4&2\\2&2\end{pmatrix}$.
+R's `chol` returns the **upper** factor, so a column-vector implementation
+uses its transpose. With draws stored as rows, right multiplication by the
+upper factor gives the same transformation.
+
+```{r gaussian-cholesky}
+set.seed(3405)
+r <- 50000L
+mu <- c(1, -1)
+Sigma <- matrix(c(4, 2, 2, 2), 2, 2)
+upper <- chol(Sigma)
+z <- matrix(rnorm(2 * r), ncol=2)
+y <- sweep(z %*% upper, 2, mu, "+")
+stopifnot(isTRUE(all.equal(crossprod(upper), Sigma)))
+mean_check <- cbind(estimate=colMeans(y), target=mu,
+                   MCSE=sqrt(diag(Sigma) / r))
+mean_check
+cov(y)
+```
+
+Whitening should recover the original independent inputs. The target
+probability inside the 95% ellipse is 0.95; the coverage standard error is
+$\sqrt{0.95(0.05)/r}$.
+
+```{r gaussian-whitening}
+centered <- sweep(y, 2, mu, "-")
+white <- t(forwardsolve(t(upper), t(centered)))
+stopifnot(max(abs(white-z)) < 1e-10)
+d2 <- rowSums(white^2)
+c(coverage=mean(d2 <= qchisq(.95, 2)), target=.95,
+  MCSE=sqrt(.95*.05/r))
+par(mfrow=c(1,2))
+plot(y[1:1500,], asp=1, pch=16, cex=.35,
+     xlab="First coordinate", ylab="Second coordinate",
+     main="Correlated Gaussian draws")
+angle <- seq(0, 2*pi, length.out=300)
+ellipse <- sqrt(qchisq(.95,2)) * cbind(cos(angle),sin(angle)) %*% upper
+ellipse <- sweep(ellipse,2,mu,"+")
+lines(ellipse,col="firebrick",lwd=2)
+plot(white[1:1500,], asp=1, pch=16, cex=.35,
+     xlab="First whitened coordinate", ylab="Second whitened coordinate",
+     main="Whitened draws")
+par(mfrow=c(1,1))
+```
+
+The transformation reproduces the off-diagonal covariance as well as the
+marginal variances. **Extension:** replace the off-diagonal covariance by zero
+while holding both variances fixed. Compare ellipse orientation and the
+variance of the difference between coordinates.
+
+# Section 3.5 — Scatter and joint covariance inference
+
+**Concept.** The normal–inverse-Wishart update uses centered scatter and a
+separate contribution from disagreement between the prior and sample
+centers. Joint posterior draws then propagate covariance uncertainty.
+
+## Printed data and conjugate update
+
+**Example.** Use the three paired measurements from the lecture notes,
+with both coordinates measured in the same arbitrary units.
+
+| Unit | First measurement | Second measurement |
+|---:|---:|---:|
+| 1 | 0 | 0 |
+| 2 | 2 | 0 |
+| 3 | 1 | 2 |
+
+Use $\boldsymbol\mu\mid\Sigma\sim N_2(\mathbf m_0,\Sigma/k_0)$ and
+$\Sigma\sim\operatorname{IW}_2(d_0,\mathbf s_0)$, with
+$\mathbf m_0=\mathbf0$, $k_0=1$, $d_0=5$, $\mathbf s_0=2\mathbf I_2$.
+The inverse-Wishart density is proportional to
+$|\Sigma|^{-(d_0+p+1)/2}\exp[-\operatorname{tr}(\mathbf s_0\Sigma^{-1})/2]$.
+
+Center the observations before calculating the scatter matrix. Add the
+displacement outer product and use the updated scale to compute the
+covariance mean for comparison with simulation.
+
+```{r niw-update}
+x <- rbind(c(0,0),c(2,0),c(1,2))
+n <- nrow(x)
+p <- ncol(x)
+xbar <- colMeans(x)
+scatter <- crossprod(sweep(x,2,xbar,"-"))
+m0 <- c(0,0); k0 <- 1; d0 <- 5; s0 <- 2*diag(p)
+kn <- k0+n
+mn <- (k0*m0+n*xbar)/kn
+dn <- d0+n
+sn <- s0+scatter+(k0*n/kn)*tcrossprod(xbar-m0)
+list(mean=xbar, centered_scatter=scatter, known_zero_scatter=crossprod(x),
+     k_n=kn, m_n=mn, d_n=dn, s_n=sn)
+stopifnot(isTRUE(all.equal(sn, matrix(c(4.75,.5,.5,5),2,2))))
+Sigma_mean <- sn/(dn-p-1)
+mu_cov <- Sigma_mean/kn
+predictive_cov <- (1+1/kn)*Sigma_mean
+list(covariance_mean=Sigma_mean, mean_vector_covariance=mu_cov,
+     predictive_covariance=predictive_cov)
+```
+
+The centered cross-product is zero, but disagreement between the prior and
+sample means contributes 0.5 to the posterior scale's off-diagonal entries.
+The analytic covariance mean is $\begin{pmatrix}.95&.1\\.1&1\end{pmatrix}$;
+the mean-vector covariance is one quarter of this matrix, and the predictive
+covariance is 1.25 times this matrix.
+
+## Direction of prior–data disagreement
+
+The extra scale is a positive semidefinite outer product; individual
+cross-products can still be negative. For this dataset it increases the
+posterior scale only along the displacement from the prior mean.
+
+```{r niw-disagreement-direction}
+delta <- xbar-m0
+disagreement <- (k0*n/kn)*tcrossprod(delta)
+u <- delta/sqrt(sum(delta^2))
+v <- c(-u[2],u[1])
+directional_scale <- c(along=drop(t(u)%*%disagreement%*%u),
+                       perpendicular=drop(t(v)%*%disagreement%*%v))
+list(disagreement=disagreement, directional_scale=directional_scale)
+stopifnot(abs(directional_scale["perpendicular"])<1e-12,
+          min(eigen(disagreement,symmetric=TRUE)$values)>-1e-12)
+```
+
+The added directional scales are $13/12$ along the displacement and zero
+perpendicular to it. Dividing by $d_n-p-1=5$ gives its contribution to
+the posterior mean covariance. This is a statement about scale, not a
+complete description of posterior uncertainty about the covariance matrix.
+
+## Wishart construction and independent NIW draws
+
+The explicit Wishart construction applies to integer degrees of freedom.
+`rWishart`, used for the larger simulation below, accepts noninteger degrees
+of freedom at least as large as the dimension. The mathematical positive
+definite Wishart law also exists for $p-1<d<p$, but this R function does not
+cover that range. The posterior below has $d_n=8$ and $p=2$.
+
+```{r wishart-construction}
+set.seed(3505)
+Psi <- matrix(c(1,.5,.5,2),2,2)
+construct_wishart <- function(df, scale) {
+  stopifnot(df >= 0, df == as.integer(df))
+  z <- matrix(rnorm(df*nrow(scale)), nrow=df, ncol=nrow(scale))
+  crossprod(z %*% chol(scale))
+}
+one_df <- construct_wishart(1,Psi)
+four_df <- construct_wishart(4,Psi)
+list(rank_one=qr(one_df)$rank, rank_four=qr(four_df)$rank,
+     expected_one=Psi, expected_four=4*Psi)
+```
+
+The NIW algorithm first draws precision, inverts it to obtain the covariance,
+then draws the mean conditional on that **same** covariance. A predictive draw
+uses both parameters from the same repetition.
+
+```{r niw-composition}
+r <- 50000L
+precision <- rWishart(r, df=dn, Sigma=solve(sn))
+Sigma_draws <- array(NA_real_,c(p,p,r))
+mu_draws <- predictive <- matrix(NA_real_,r,p)
+for (s in seq_len(r)) {
+  Sigma_s <- solve(precision[,,s])
+  lower_s <- t(chol(Sigma_s))
+  mu_s <- mn+drop(lower_s %*% rnorm(p))/sqrt(kn)
+  Sigma_draws[,,s] <- Sigma_s
+  mu_draws[s,] <- mu_s
+  predictive[s,] <- mu_s+drop(lower_s %*% rnorm(p))
+}
+Sigma_est <- apply(Sigma_draws,c(1,2),mean)
+Sigma_se <- apply(Sigma_draws,c(1,2),sd)/sqrt(r)
+list(covariance_mean=Sigma_est, covariance_mean_MCSE=Sigma_se,
+     mean_vector_mean=colMeans(mu_draws),
+     mean_vector_covariance=cov(mu_draws),
+     predictive_covariance=cov(predictive))
+# Check the analytic covariance-entry means on a Monte Carlo scale.
+stopifnot(all(abs(Sigma_est-Sigma_mean) < 6*Sigma_se))
+```
+
+Compare the displayed Monte Carlo estimates with the analytic matrices above;
+finite simulation error remains. The iid standard errors apply to the
+averaged covariance entries. They are not automatically standard errors for
+all derived nonlinear summaries.
+
+Compute the variance in the direction $(1,-1)$ in two ways. Average
+the conditional variance over covariance draws, then compare with the
+sample variance of the drawn contrasts.
+
+```{r niw-contrast}
+contrast_variance <- (Sigma_draws[1,1,]+Sigma_draws[2,2,]-
+                       2*Sigma_draws[1,2,])/kn
+c(conditional_variances_average=mean(contrast_variance),
+  empirical_contrast_variance=var(mu_draws[,1]-mu_draws[,2]),
+  target=drop(c(1,-1) %*% mu_cov %*% c(1,-1)))
+```
+
+```{r niw-contrast-visual}
+contrast_draw <- mu_draws[, 1] - mu_draws[, 2]
+predictive_contrast <- predictive[, 1] - predictive[, 2]
+contrast_density <- density(contrast_draw)
+predictive_density <- density(predictive_contrast)
+plot(contrast_density, type = "l", col = "#0072B2", lwd = 2, main = "",
+     xlim = range(contrast_density$x, predictive_density$x),
+     xlab = "First coordinate minus second coordinate", ylab = "Density")
+lines(predictive_density, col = "#D55E00", lty = 2, lwd = 2)
+legend("topright", c("Mean contrast", "Future observation"), bty = "n",
+       col = c("#0072B2", "#D55E00"), lwd = 2, lty = c(1, 2))
+```
+
+**Extension:** change $k_0$ from 1 to 4 and rerun the update and simulation.
+Explain how the between-center contribution changes, not just the posterior
+mean. Then replace covariance draws by the fixed matrix $E(\Sigma\mid\mathbf
+x^n)$ when generating means. Matching a covariance matrix does not establish
+that the joint posterior or its tail probabilities have been reproduced.
+
+
+## Bivariate LKJ calibration
+
+**Concept.** In two dimensions the LKJ shape controls prior
+concentration of the correlation around zero.
+
+**Example.** Compare shapes one and two at a correlation threshold
+of 0.8. Under the transformation $(\rho+1)/2$, the two priors are
+symmetric Beta distributions. Use one Beta tail and double it to get
+the probability of $|\rho|>0.8$.
+
+```{r lkj-calibration}
+lkj_shapes <- c(1, 2)
+lkj_tails <- 2 * pbeta((1 - 0.8) / 2, lkj_shapes, lkj_shapes)
+stopifnot(max(abs(lkj_tails - c(.2, .056))) < 1e-12)
+data.frame(h0 = lkj_shapes, probability_above_0.8 = lkj_tails)
+```
+
+```{r lkj-lecture-figure, echo=FALSE, out.width="100%", fig.cap="Lecture notes, Section 3.5. The right panel shows the tail probabilities calculated above."}
+notes_figure("section35-lkj-shape-concept.png")
+```
+
+These calculations are specific to $p=2$. Uniformity over a larger space of
+correlation matrices does not make each marginal correlation uniform.
+**Extension:** select a shape $h_0$ so that $P(|\rho|>0.8)=0.1$ by solving
+`2*pbeta(.1,h0,h0)-.1=0` with `uniroot` on `[1,2]`.
+
+R `r getRversion()` · BayesComp `r utils::packageVersion('BayesComp')`

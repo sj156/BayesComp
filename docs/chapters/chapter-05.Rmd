@@ -1,0 +1,220 @@
+---
+title: "Chapter 5 — Bayesian Model Uncertainty"
+subtitle: "STA5001 R Computational Companion"
+author: "STA5001 Bayesian & Computational Statistics"
+output:
+  html_document:
+    toc: true
+    toc_depth: 3
+    number_sections: false
+    code_folding: show
+    code_download: true
+    self_contained: true
+    math_method: mathml
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = TRUE, message = FALSE,
+                      fig.width = 7, fig.height = 4, digits = 4)
+notes_figure <- function(file) {
+  knitr::include_graphics(system.file("figures", file, package = "BayesComp",
+                                      mustWork = TRUE))
+}
+```
+
+Work through the examples in order. Section numbers follow the STA5001
+lecture notes, which develop the models and algorithms used here. Open
+`chapter-05.Rmd` in RStudio and choose **Knit** to reproduce the outputs.
+Install BayesComp with `remotes::install_github("sj156/BayesComp")`
+to use the lecture-note figures included in this chapter.
+
+# Section 5.2 — Evidence and prior sensitivity
+
+**Concept.** A Bayes factor compares the probabilities or densities that two models
+assign to the data after averaging over their parameters. Multiplying
+prior odds by the Bayes factor gives posterior odds.
+
+**Example.** After two heads, compare a fair coin with an alternative
+that gives the head probability a uniform Beta prior. Then use the
+lecture notes' standardized normal offset $z=2$ to see how increasing
+the prior scale changes the evidence for a nonzero offset.
+
+Subtract log marginal likelihoods to form the Bayes factor. For the
+normal example, use marginal variance $1+s_0^2$ under the alternative
+and compare its evidence with its conditional posterior mean.
+
+```{r section5-evidence}
+y_binary <- c(1, 1)
+n_binary <- length(y_binary)
+a0 <- b0 <- 1
+log_m0 <- -n_binary * log(2)
+log_m1 <- lbeta(a0 + sum(y_binary), b0 + n_binary - sum(y_binary)) -
+  lbeta(a0, b0)
+bf10 <- exp(log_m1 - log_m0)
+prior_odds <- 1 / 3
+posterior_m1 <- bf10 * prior_odds / (1 + bf10 * prior_odds)
+stopifnot(abs(bf10 - 4/3) < 1e-12,
+          abs(posterior_m1 - 4/13) < 1e-12)
+c(Bayes_factor=bf10, posterior_alternative=posterior_m1)
+s0 <- c(1, 10, 100)
+z <- 2
+normal_bf <- exp(-.5 * log1p(s0^2) + z^2 * s0^2 / (2 * (1+s0^2)))
+data.frame(s0, posterior_mean=z*s0^2/(1+s0^2),
+           Bayes_factor=normal_bf, model_probability=normal_bf/(1+normal_bf))
+```
+
+```{r s52-lecture-evidence, echo=FALSE, out.width="100%", fig.cap="Lecture notes, Section 5.2. The panels compare conditional estimation with model evidence."}
+notes_figure("section52-evidence-sensitivity.png")
+```
+
+The two broad priors give almost the same conditional mean estimate, but
+very different evidence. As an extension, change the observed value to
+zero and explain the direction of every Bayes factor.
+
+# Section 5.3 — Prior probabilities over model sizes
+
+**Concept.** Model size aggregates prior probabilities over every subset of a
+given size. The number of subsets therefore matters when translating
+between priors on models and priors on model size.
+
+**Example.** For two candidate predictors, compare fixed independent
+inclusion with probability $1/2$ to a shared inclusion probability
+drawn from a uniform Beta distribution.
+
+Enumerate the four subsets, integrate each model probability using a
+beta-function ratio, then sum the model probabilities by size.
+
+```{r section5-prior-sizes}
+gamma_small <- as.matrix(expand.grid(gamma1=0:1, gamma2=0:1))
+size_small <- rowSums(gamma_small)
+prior_fixed <- rep(1/4, 4)
+a0 <- b0 <- 1
+prior_mixed <- exp(lbeta(a0 + size_small, b0 + 2 - size_small) - lbeta(a0,b0))
+stopifnot(abs(sum(prior_mixed)-1) < 1e-12)
+data.frame(gamma_small, size=size_small, prior_fixed, prior_mixed)
+sapply(0:2, function(s) sum(prior_mixed[size_small==s]))
+```
+
+For 20 predictors, compute the total probability of each size by
+multiplying single-model probability by the number of models of that size.
+The third prior puts more mass on smaller models.
+
+```{r s53-twenty-predictors}
+size <- 0:20
+size_mass <- cbind(
+  equal_models = dbinom(size, 20, .5),
+  equal_sizes = rep(1 / 21, 21),
+  sparse = exp(lchoose(20, size) + lbeta(1 + size, 40 - size) - lbeta(1, 20))
+)
+stopifnot(all(abs(colSums(size_mass) - 1) < 1e-12))
+rbind(empty = size_mass[1, ], size_10 = size_mass[11, ],
+      expected_size = drop(crossprod(size, size_mass)))
+```
+
+```{r s53-lecture-size, echo=FALSE, out.width="100%", fig.cap="Lecture notes, Section 5.3. The left panel shows aggregate size probabilities and the right shows per-model probabilities."}
+notes_figure("section53-size-priors.png")
+```
+
+The mixed prior gives probabilities $(1/3,1/6,1/6,1/3)$ to the four
+models. Try a beta prior with $(a_0,b_0)=(1,2)$ and compare its expected
+size with the fixed-inclusion prior having the same mean inclusion rate.
+
+# Section 5.4 — Exact enumeration and predictive uncertainty
+
+**Concept.** When the model space is small enough to enumerate, normalize the
+evidence-weighted prior probabilities directly. Model averaging then
+uses those posterior weights to mix whole predictive distributions.
+
+**Example.** Use the five artificial observations in the notes. The
+two predictors are centered, and all variables are dimensionless.
+The four models include every predictor subset and always an intercept.
+Use $g_0=5$, equal model priors, and the shared nuisance prior
+$p(\alpha,\sigma^2)\propto1/\sigma^2$ with the same constant in every
+model. The computed evidences are ratios against the intercept-only model.
+
+Compute the explained sum of squares for each subset, then transform its
+fraction of the total into a Bayes factor. Normalize on the log scale,
+sum weights for models that include each predictor, and average the
+predictive variances at $(0,0)$, where the component means coincide.
+
+```{r section5-enumeration}
+dat5 <- data.frame(x1=c(-2,-1,0,1,2), x2=c(2,-1,-2,-1,2),
+                   y=c(-1,0,1,1,4))
+dat5
+x5 <- as.matrix(dat5[c('x1','x2')])
+yc5 <- dat5$y - mean(dat5$y)
+n5 <- nrow(dat5)
+g0 <- 5
+gamma5 <- as.matrix(expand.grid(gamma1=0:1,gamma2=0:1))
+size5 <- rowSums(gamma5)
+r2_5 <- apply(gamma5, 1, function(included) {
+  if (!any(included)) return(0)
+  xs <- x5[, included==1, drop=FALSE]
+  beta_hat <- solve(crossprod(xs),crossprod(xs,yc5))
+  sum((xs %*% beta_hat)^2)/sum(yc5^2)
+})
+log_bf5 <- (n5-1-size5)/2*log1p(g0) -
+  (n5-1)/2*log1p(g0*(1-r2_5))
+normalize_log <- function(log_weights) {
+  w <- exp(log_weights-max(log_weights))
+  w/sum(w)
+}
+w5 <- normalize_log(log_bf5 + log(rep(.25,4)))
+pip5 <- drop(crossprod(w5,gamma5))
+q5 <- sum(yc5^2)*(1-g0*r2_5/(1+g0))
+# At centered predictors (0,0), all predictive means are the sample mean.
+# Integrating sigma^2 gives t_(n-1), with finite variance for n>3.
+a_n5 <- (n5-1)/2
+b_n5 <- q5/2
+v5 <- (1+1/n5)*b_n5/(a_n5-1)
+bma_variance5 <- sum(w5*v5)
+data.frame(gamma5, R2=r2_5, BF=exp(log_bf5), posterior_weight=w5,
+           predictive_variance=v5)
+c(PIP1=pip5[1], PIP2=pip5[2], mean=mean(dat5$y), variance=bma_variance5)
+# Independent checks: sum of probabilities, projection decomposition,
+# normalization invariance, and direct marginal-likelihood integration.
+stopifnot(abs(sum(w5)-1)<1e-12,
+          abs(r2_5[4]-r2_5[2]-r2_5[3])<1e-12,
+          max(abs(normalize_log(log_bf5-10000)-w5))<1e-10)
+int5 <- vapply(seq_along(q5),function(j) {
+  integrate(function(variance) (1+g0)^(-size5[j]/2) *
+    variance^(-a_n5-1)*exp(-q5[j]/(2*variance)),
+    0,Inf,rel.tol=1e-9)$value
+},numeric(1))
+stopifnot(max(abs(int5/int5[1]-exp(log_bf5)))<1e-7)
+# Check the predictive variance against the t distribution's moments.
+t_scale2 <- (1+1/n5)*q5/(n5-1)
+stopifnot(max(abs(t_scale2*(n5-1)/(n5-3)-v5))<1e-12)
+```
+
+The full model explains more variation, but the first-predictor-only
+model has higher posterior probability. At the centered prediction point,
+model means agree while their predictive variances differ. The mixture
+retains uncertainty even though the between-model mean term is zero.
+
+Reweight the same likelihoods using an inclusion probability of 1/4.
+Evaluate the four Student predictive densities on a common grid,
+then plot the mixture for each model prior.
+
+```{r section5-sensitivity}
+omega <- .25
+prior_sparse <- omega^size5*(1-omega)^(2-size5)
+w_sparse <- normalize_log(log_bf5 + log(prior_sparse))
+data.frame(gamma5, prior_sparse, posterior_weight=w_sparse)
+c(PIP1=sum(w_sparse*gamma5[,1]), PIP2=sum(w_sparse*gamma5[,2]),
+  predictive_variance=sum(w_sparse*v5))
+y_future <- seq(-8,10,length.out=501)
+dens5 <- sapply(seq_along(w5),function(j)
+  dt((y_future-mean(dat5$y))/sqrt(t_scale2[j]),df=n5-1)/sqrt(t_scale2[j]))
+plot(y_future,drop(dens5 %*% w5),type='l',lwd=2,col='#0072B2',
+     xlab='Future response at centered predictors',ylab='Predictive density')
+lines(y_future,drop(dens5 %*% w_sparse),lwd=2,lty=2,col='#D55E00')
+legend('topright',c('Equal model priors','Inclusion probability 1/4'),
+       col=c('#0072B2','#D55E00'),lty=c(1,2),lwd=2,bty='n')
+```
+
+As an extension, vary $g_0$ over $1,5,25$ and recompute both model
+weights and within-model predictive variances. Changing only the weights
+would miss the scale's effect on the conditional predictions.
+
+R `r getRversion()` · BayesComp `r utils::packageVersion('BayesComp')`

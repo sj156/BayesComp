@@ -1,0 +1,213 @@
+---
+title: "Chapter 1 — Introduction"
+subtitle: "STA5001 R Computational Companion"
+author: "STA5001 Bayesian & Computational Statistics"
+output:
+  html_document:
+    toc: true
+    toc_depth: 3
+    number_sections: false
+    code_folding: show
+    code_download: true
+    self_contained: true
+    math_method: mathml
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = TRUE, message = FALSE,
+                      fig.width = 7, fig.height = 4, digits = 4)
+notes_figure <- function(file) {
+  knitr::include_graphics(system.file("figures", file, package = "BayesComp",
+                                      mustWork = TRUE))
+}
+```
+
+Work through the examples in order. Section numbers follow the STA5001
+lecture notes, which develop the models and algorithms used here. Open
+`chapter-01.Rmd` in RStudio and choose **Knit** to reproduce the outputs.
+Install BayesComp with `remotes::install_github("sj156/BayesComp")`
+to use the lecture-note figures included in this chapter.
+
+# Section 1.1 — Updating, evidence, and prediction
+
+**Concept.** Bayes' rule reweights prior probabilities by the likelihood. The
+normalizing constant is the probability of the observed sequence under
+the whole model. Prediction then averages over the posterior.
+
+**Example.** Choose one of two coins with equal prior probability. The two coins
+have head probabilities 1/4 and 3/4. Observe two heads followed by a tail.
+
+The code computes the likelihood of the ordered sequence for each coin,
+sums the prior-weighted likelihoods to find the evidence, and then uses
+the posterior weights to predict the next toss.
+
+```{r s11-two-coins}
+coin_values <- c(1/4, 3/4)
+coin_prior <- c(1/2, 1/2)
+coin_data <- c(1,1,0)
+coin_likelihood <- coin_values^sum(coin_data) *
+  (1-coin_values)^(length(coin_data)-sum(coin_data))
+coin_joint <- coin_prior * coin_likelihood
+coin_evidence <- sum(coin_joint)
+coin_posterior <- coin_joint / coin_evidence
+knitr::kable(data.frame(theta=coin_values, prior=coin_prior,
+                       likelihood=coin_likelihood, posterior=coin_posterior))
+coin_prediction <- sum(coin_values * coin_posterior)
+c(evidence=coin_evidence, next_head=coin_prediction)
+stopifnot(abs(coin_evidence-3/32)<1e-12,
+          max(abs(coin_posterior-c(1/4,3/4)))<1e-12,
+          abs(coin_prediction-5/8)<1e-12)
+```
+
+```{r s11-coin-weights}
+barplot(rbind(coin_prior, coin_posterior), beside = TRUE,
+        names.arg = c("Head probability 1/4", "Head probability 3/4"),
+        col = c("grey70", "#0072B2"), ylim = c(0, 1),
+        ylab = "Probability assigned to coin")
+legend("topleft", c("Prior", "Posterior"),
+       fill = c("grey70", "#0072B2"), bty = "n")
+```
+
+A posterior probability of `3/4` for the high-bias coin is different from
+the predictive probability `5/8` of the next head. **Extension:** change
+its prior probability to `1/5`; verify that the data still favor it even
+though it remains less probable after updating.
+
+# Section 1.2 — Prior strength and predictive uncertainty
+
+**Concept.** Two Beta priors can have the same mean and different strengths.
+Their total shape parameters determine how much weight the sample
+receives in the posterior mean.
+
+**Example.** Use 100 hypothetical infection tests, all negative. These
+counts are a sufficient summary under the common-rate Bernoulli model.
+The two priors below have the same mean, 0.001, and different strength.
+
+Add the observed successes and failures to each prior. The ratio of
+beta functions gives the probability of no infections among the
+next 100 people after integrating over the shared rate.
+
+```{r s12-prior-strength}
+s12_n <- 100; s12_successes <- 0
+s12_a0 <- c(.1,1); s12_b0 <- c(99.9,999)
+s12_an <- s12_a0+s12_successes
+s12_bn <- s12_b0+s12_n-s12_successes
+knitr::kable(data.frame(prior_mean=s12_a0/(s12_a0+s12_b0),
+ concentration=s12_a0+s12_b0, posterior_mean=s12_an/(s12_an+s12_bn),
+ data_weight=s12_n/(s12_n+s12_a0+s12_b0)))
+s12_m <- 100
+s12_any <- 1-exp(lbeta(s12_an,s12_bn+s12_m)-lbeta(s12_an,s12_bn))
+s12_any
+stopifnot(abs(s12_any[2]-100/1199)<1e-12)
+```
+
+```{r s12-lecture-figure, echo=FALSE, out.width="100%", fig.cap="Lecture notes, Section 1.2. The vertical guides mark 100 observations."}
+notes_figure("section12-prior-strength.png")
+```
+
+Zero observed infections do not imply zero predictive risk. These
+calculations cannot repair an unrepresentative sample. **Extension:**
+compare with priors `Beta(1,99)` and `Beta(1,999)` and explain why that
+comparison changes both location and strength.
+
+# Section 1.3 — Independent Monte Carlo and predictive replication
+
+**Concept.** Independent posterior draws turn posterior expectations into
+sample averages. The Monte Carlo standard error measures the precision
+of those averages for a given simulation budget.
+
+**Example.** Observe seven successes in ten trials under a uniform prior.
+Estimate the posterior mean and the probability that the success rate
+exceeds one half, then predict the count in five new trials.
+
+Draw from the `Beta(8,4)` posterior and compute two sample averages,
+one for the rate and one for the threshold indicator. Compare each
+with its exact value and use the corresponding sample standard
+deviation to estimate its Monte Carlo standard error.
+
+```{r s13-monte-carlo}
+set.seed(20260927)
+s13_S <- 20000
+s13_theta <- rbeta(s13_S,8,4)
+s13_h <- as.numeric(s13_theta > .5)
+s13_est <- c(mean=mean(s13_theta), probability=mean(s13_h))
+s13_mcse <- c(mean=sd(s13_theta), probability=sd(s13_h))/sqrt(s13_S)
+s13_exact <- c(mean=2/3, probability=227/256)
+knitr::kable(data.frame(target=names(s13_est), estimate=s13_est,
+ exact=s13_exact, MCSE=s13_mcse,
+ error_in_MCSE=(s13_est-s13_exact)/s13_mcse),row.names=FALSE)
+c(posterior_SD=sqrt(2/117), simulated_SD=sd(s13_theta))
+stopifnot(all(abs(s13_est-s13_exact)<6*s13_mcse))
+# Generalized inverse of the empirical cdf: no interpolation.
+quantile(s13_theta,c(.025,.975),type=1)
+qbeta(c(.025,.975),8,4)
+```
+
+Use one parameter draw for each entire five-trial dataset. Redrawing a
+parameter for each individual trial would define a different predictive
+joint distribution.
+
+```{r s13-predictive}
+set.seed(20260928)
+s13_counts <- rbinom(s13_S,5,prob=s13_theta)
+s13_grid <- 0:5
+s13_mass <- exp(lchoose(5,s13_grid)+lbeta(8+s13_grid,9-s13_grid)-lbeta(8,4))
+s13_simulated <- tabulate(s13_counts + 1, nbins = 6) / s13_S
+knitr::kable(data.frame(successes = s13_grid, simulated = s13_simulated,
+                       exact = s13_mass))
+c(simulated_mean=mean(s13_counts), exact_mean=10/3,
+  simulated_variance=var(s13_counts), exact_variance=170/117)
+stopifnot(abs(sum(s13_mass)-1)<1e-12,
+ abs(mean(s13_counts)-10/3)<6*sqrt((170/117)/s13_S))
+```
+
+```{r s13-predictive-visual}
+barplot(rbind(s13_simulated, s13_mass), beside = TRUE, names.arg = s13_grid,
+        col = c("#0072B2", "grey70"), ylim = c(0, 0.4),
+        xlab = "Successes in five trials", ylab = "Predictive probability")
+legend("topleft", c("Simulation", "Exact"), fill = c("#0072B2", "grey70"),
+       bty = "n")
+```
+
+The predictive variance exceeds `5*(2/3)*(1/3)`, the plug-in binomial
+variance. **Extension:** estimate the probability of five successes and
+its MCSE, checking against `33/182`. Then use independent parameter draws
+within each five-trial dataset and compare with `(2/3)^5`.
+
+# Section 1.4 — Marginal and conditional comparisons
+
+**Concept.** When groups have different mixes of departments, their overall
+rates weight the department-specific rates differently. The overall
+comparison can reverse the within-department comparisons.
+
+**Example.** Use the hypothetical admissions rates and department
+weights in the notes. Group 1 applies mostly to the department with
+the higher admissions rate.
+
+Store rates and application weights in separate matrices, with groups
+as rows and departments as columns. Sum the weighted rates across
+departments to obtain each group's marginal rate.
+
+```{r s14-simpson}
+s14_conditional <- rbind(group1=c(.8,.4), group0=c(.9,.5))
+s14_weights <- rbind(group1=c(.9,.1), group0=c(.1,.9))
+s14_marginal <- rowSums(s14_conditional*s14_weights)
+knitr::kable(cbind(s14_conditional, marginal=s14_marginal),
+ col.names=c('Department 1','Department 2','Marginal'))
+stopifnot(max(abs(s14_marginal-c(.76,.54)))<1e-12)
+```
+
+```{r s14-admission-visual}
+barplot(cbind(s14_conditional, s14_marginal), beside = TRUE,
+        names.arg = c("Department 1", "Department 2", "Overall"),
+        col = c("#0072B2", "#D55E00"), ylim = c(0, 1.1),
+        ylab = "Admission probability")
+legend("topright", c("Group 1", "Group 0"), fill = c("#0072B2", "#D55E00"),
+       bty = "n", horiz = TRUE)
+```
+
+The reversal arises from different department weights. Neither calculation
+alone identifies a causal effect. **Extension:** standardize both groups
+to department weights `(0.5,0.5)` and interpret the resulting comparison.
+
+R `r getRversion()` · BayesComp `r utils::packageVersion('BayesComp')`

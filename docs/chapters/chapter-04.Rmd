@@ -1,0 +1,311 @@
+---
+title: "Chapter 4 — Gaussian Linear Regression"
+subtitle: "STA5001 R Computational Companion"
+author: "STA5001 Bayesian & Computational Statistics"
+output:
+  html_document:
+    toc: true
+    toc_depth: 3
+    number_sections: false
+    code_folding: show
+    code_download: true
+    self_contained: true
+    math_method: mathml
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = TRUE, message = FALSE,
+                      fig.width = 7, fig.height = 4, digits = 4)
+notes_figure <- function(file) {
+  knitr::include_graphics(system.file("figures", file, package = "BayesComp",
+                                      mustWork = TRUE))
+}
+```
+
+Work through the examples in order. Section numbers follow the STA5001
+lecture notes, which develop the models and algorithms used here. Open
+`chapter-04.Rmd` in RStudio and choose **Knit** to reproduce the outputs.
+Install BayesComp with `remotes::install_github("sj156/BayesComp")`
+to use the lecture-note figures included in this chapter.
+
+# Section 4.1 — Design geometry from three observations
+
+**Concept.** Least squares projects the response onto the span of the design
+columns. The residual is perpendicular to that span.
+
+**Example.** Fit an intercept and a slope for `z = (-1,0,1)` and
+`y = (0,1,3)` in arbitrary response units.
+
+Make the intercept and slope columns, solve for the coefficients with
+QR, then check the residual's inner products with the design columns.
+
+```{r regression-geometry}
+z_small <- c(-1, 0, 1)
+y_small <- c(0, 1, 3)
+x_small <- cbind(intercept=1, z=z_small)
+beta_hat <- drop(qr.solve(x_small, y_small))
+residual <- drop(y_small - x_small %*% beta_hat)
+sse <- sum(residual^2)
+stopifnot(max(abs(beta_hat-c(4/3,3/2))) < 1e-12,
+          max(abs(crossprod(x_small, residual))) < 1e-12,
+          abs(sse-1/6) < 1e-12)
+cbind(z=z_small, y=y_small, fitted=drop(x_small %*% beta_hat), residual)
+c(SSE=sse, residual_df=nrow(x_small)-ncol(x_small))
+par(mfrow=c(1,2), mar=c(4,4,2,1), cex=1)
+plot(z_small, y_small, pch=19, xlab="Predictor", ylab="Response",
+     main="Least-squares projection")
+abline(beta_hat, col="#0072B2", lwd=2)
+segments(z_small, y_small, z_small, x_small %*% beta_hat,
+         col="#D55E00", lwd=2)
+plot(z_small, residual, pch=19, ylim=c(-.4,.4),
+     xlab="Predictor", ylab="Residual", main="Orthogonal residuals")
+abline(h=0, lty=2)
+par(mfrow=c(1,1))
+```
+
+There is only one residual degree of freedom. Three rows do not mean three
+independent pieces of information about noise after two coefficients are fitted.
+**Extension:** duplicate the slope column. Verify that rank falls short of the
+number of coefficients, while the fitted response vector remains unique.
+
+# Section 4.2 — Conjugate updates and joint simulation
+
+**Concept.** A Gaussian coefficient prior scaled by the unknown residual variance
+gives a conjugate update. Drawing the variance first lets the coefficient
+draw inherit its uncertainty.
+
+**Example.** Reuse the three-point dataset from Section 4.1 and put an
+independent-coefficient prior on the intercept and slope conditional on
+the variance. Estimate the probability that the intercept exceeds the slope.
+
+Add prior and sample precisions in `reg_fit`, then compute the updated
+inverse-gamma scale from two nonnegative squared terms. `reg_draw` draws the
+variance first and uses the Cholesky factor for the conditional coefficients. These small examples use
+matrix solves; large or ill-conditioned problems should use suitable factorizations.
+
+```{r regression-functions}
+reg_fit <- function(x, y, m0, v0, d0, s0) {
+  stopifnot(nrow(x)==length(y), ncol(x)==length(m0), d0>0, s0>0)
+  chol(v0)                         # verifies positive definiteness
+  p0 <- solve(v0)
+  vn <- solve(p0 + crossprod(x))
+  mn <- drop(vn %*% (p0 %*% m0 + crossprod(x, y)))
+  sn <- s0 + sum((y-x %*% mn)^2) +
+    drop(crossprod(mn-m0, p0 %*% (mn-m0)))
+  sn_check <- s0 + sum(y^2) + drop(crossprod(m0,p0 %*% m0)) -
+    drop(crossprod(mn,solve(vn,mn)))
+  stopifnot(abs(sn-sn_check) < 1e-8)
+  list(x=x, mn=mn, vn=vn, dn=d0+length(y), sn=sn)
+}
+reg_draw <- function(fit, r) {
+  sigma2 <- 1/rgamma(r, shape=fit$dn/2, rate=fit$sn/2)
+  # R's chol is upper triangular; row-normal draws multiply on the right.
+  beta <- matrix(rnorm(r*length(fit$mn)), nrow=r) %*% chol(fit$vn)
+  beta <- sweep(sweep(beta,1,sqrt(sigma2),"*"),2,fit$mn,"+")
+  list(beta=beta, sigma2=sigma2)
+}
+small_fit <- reg_fit(x_small,y_small,c(0,0),diag(2),4,2)
+stopifnot(max(abs(small_fit$mn-c(1,1))) < 1e-12,
+          max(abs(small_fit$vn-diag(c(1/4,1/3)))) < 1e-12,
+          small_fit$dn==7, abs(small_fit$sn-5) < 1e-12)
+small_fit[c("mn","vn","dn","sn")]
+set.seed(4102)
+small_draw <- reg_draw(small_fit,20000)
+difference <- small_draw$beta[,1]-small_draw$beta[,2]
+p_hat <- mean(difference>0)
+c(estimate=p_hat, exact=.5, MCSE=sqrt(p_hat*(1-p_hat)/length(difference)))
+stopifnot(abs(p_hat-.5) < 5*sqrt(.25/length(difference)))
+```
+
+The posterior mean of the residual variance is one. The reference analysis of
+the same data is proper but has an infinite variance mean, because its
+inverse-gamma shape is only one half. This is a model choice, not simulation error.
+
+**Example.** For the 50 stopping distances in `datasets::cars`, estimate how
+much mean stopping distance increases from 15 to 25 mph.
+
+Center speed at 15 mph and scale it in units of 10 mph. Under this coding,
+the linear slope is the mean difference of interest. Use its Student
+posterior to get an interval and the probability that it exceeds 30 feet.
+
+```{r cars-conjugate-update}
+cars_data <- datasets::cars
+stopifnot(nrow(cars_data)==50, !anyNA(cars_data),
+          identical(range(cars_data$speed),c(4,25)))
+z_cars <- (cars_data$speed-15)/10
+y_cars <- cars_data$dist
+x_linear <- cbind(1,z_cars)
+x_quadratic <- cbind(1,z_cars,z_cars^2)
+fit_linear <- reg_fit(x_linear,y_cars,c(40,30),diag(c(4,4)),6,900)
+fit_quadratic <- reg_fit(x_quadratic,y_cars,c(40,30,0),diag(c(4,4,1)),6,900)
+fit_linear[c("mn","vn","dn","sn")]
+slope_scale <- sqrt(fit_linear$sn/fit_linear$dn*fit_linear$vn[2,2])
+c(mean=fit_linear$mn[2],
+  lower=fit_linear$mn[2]+qt(.025,fit_linear$dn)*slope_scale,
+  upper=fit_linear$mn[2]+qt(.975,fit_linear$dn)*slope_scale,
+  probability_above_30=pt((fit_linear$mn[2]-30)/slope_scale,fit_linear$dn))
+stopifnot(max(abs(fit_linear$mn-c(41.407,39.158))) < .001,
+          abs(fit_linear$sn-12275.36)<.01)
+```
+
+```{r cars-lecture-update, echo=FALSE, out.width="100%", fig.cap="Lecture notes, Section 4.2. The arrow spans the posterior mean distances at 15 and 25 mph."}
+notes_figure("section42-cars-update.png")
+```
+
+**Extension:** set the two columns of a design equal, keeping a proper prior.
+Compare posterior variation along their sum and difference. Then investigate why
+replacing the proper prior by the reference kernel makes the posterior improper.
+
+# Section 4.3 — Prior scales and directional shrinkage
+
+**Concept.** A spherical coefficient prior shrinks weak design directions more
+strongly. A g-prior uses the design geometry and retains the same
+fraction in each direction.
+
+**Example.** Start with design information 100 and 1 in two directions.
+Then look at what the coefficient prior implies for mean stopping distance.
+
+Compute data-retention factors in the two directions. Refit after
+recoding speed and transforming its prior to check that predicted means
+and their covariance are invariant to a consistent change of units.
+
+```{r regression-shrinkage}
+eigenvalues <- c(100,1)
+h0 <- 1; g0 <- 4
+cbind(design_information=eigenvalues,
+      ridge=eigenvalues/(eigenvalues+h0^(-2)),
+      g_prior=rep(g0/(g0+1),2))
+# Transforming both design and prior preserves the fitted distribution.
+x_recoded <- x_linear %*% diag(c(1,100))
+h_inv <- diag(c(1,.01))
+fit_recoded <- reg_fit(x_recoded,y_cars,
+                      drop(h_inv %*% c(40,30)),
+                      h_inv %*% diag(c(4,4)) %*% h_inv,6,900)
+stopifnot(max(abs(x_recoded %*% fit_recoded$mn -
+                 x_linear %*% fit_linear$mn)) < 1e-10,
+          max(abs(x_recoded %*% fit_recoded$vn %*% t(x_recoded) -
+                  x_linear %*% fit_linear$vn %*% t(x_linear))) < 1e-10)
+```
+
+For the stopping-distance data, compare the initial covariance multiplier
+of four with one quarter. Keep the prior center and variance prior fixed.
+
+```{r cars-prior-sensitivity}
+fit_tighter <- reg_fit(x_linear, y_cars, c(40, 30), diag(c(.25, .25)),
+                      d0 = 6, s0 = 900)
+slope_interval <- function(fit) {
+  scale <- sqrt(fit$sn / fit$dn * fit$vn[2, 2])
+  fit$mn[2] + scale * qt(c(.025, .5, .975), fit$dn)
+}
+intervals <- rbind(original = slope_interval(fit_linear),
+                   tighter = slope_interval(fit_tighter))
+colnames(intervals) <- c("2.5%", "Median", "97.5%")
+intervals
+```
+
+```{r cars-lecture-prior, echo=FALSE, out.width="100%", fig.cap="Lecture notes, Section 4.3. Prior mean curves and marginal slope posteriors under the two prior scales."}
+notes_figure("section43-cars-prior.png")
+```
+
+The prior permits negative mean distances at some speeds. Diffuseness is not a
+substitute for plausible predictions. **Extension:** multiply the linear-model slope
+prior variance by four while keeping the intercept prior fixed. Compare
+negative-mean probabilities and the posterior slope interval.
+
+# Section 4.4 — Prediction, extrapolation, and a targeted check
+
+**Concept.** A future response has uncertainty from the regression mean and
+residual noise. Extrapolation can also reveal sensitivity to the model's
+functional form.
+
+**Example.** Compare linear and quadratic stopping-distance predictions at 15 mph
+and at 35 mph, beyond the observed range.
+
+Compute the Student intervals from the fitted model. The mean-response
+scale uses the new design row's leverage. The future-response scale
+adds the unit contribution from residual noise.
+
+```{r regression-prediction-functions}
+reg_predict <- function(fit,new_x) {
+  h <- rowSums((new_x %*% fit$vn)*new_x)
+  center <- drop(new_x %*% fit$mn)
+  width_mean <- qt(.975,fit$dn)*sqrt(fit$sn/fit$dn*h)
+  width_future <- qt(.975,fit$dn)*sqrt(fit$sn/fit$dn*(1+h))
+  data.frame(center,mean_lo=center-width_mean,mean_hi=center+width_mean,
+             future_lo=center-width_future,future_hi=center+width_future)
+}
+speeds <- c(15,35)
+z_new <- (speeds-15)/10
+linear_report <- reg_predict(fit_linear,cbind(1,z_new))
+quadratic_report <- reg_predict(fit_quadratic,cbind(1,z_new,z_new^2))
+cbind(speed=speeds,linear_report)
+cbind(speed=speeds,quadratic_report)
+stopifnot(abs(linear_report$center[1]-41.407)<.001,
+          abs(quadratic_report$center[2]-150.70)<.01)
+```
+
+```{r cars-lecture-prediction, echo=FALSE, out.width="100%", fig.cap="Lecture notes, Section 4.4. The panels compare interval targets and model forms."}
+notes_figure("section44-cars-prediction.png")
+```
+
+The new-response interval contains residual noise as well as uncertainty about
+the mean. At 35 mph, both models extrapolate beyond every observed speed; their
+disagreement is additional to the uncertainty represented within either model.
+
+## A predictive check for curvature
+
+**Concept.** A predictive check uses a discrepancy that targets a
+specific aspect of model fit and asks how unusual the observed value is
+under posterior replications.
+
+**Example.** To check curvature in the stopping-distance data, use the
+absolute coefficient of the quadratic term from an
+auxiliary least-squares fit. The same linear weights extract this coefficient
+from the observed data and every replication, so matrix multiplication is
+exactly equivalent to refitting all auxiliary regressions.
+
+```{r regression-predictive-check}
+curvature_weights <- qr.solve(x_quadratic,diag(nrow(x_quadratic)))[3,]
+t_observed <- abs(sum(curvature_weights*y_cars))
+exact_check <- function(fit) {
+  ax <- drop(crossprod(fit$x,curvature_weights))
+  center <- sum(ax*fit$mn)
+  scale <- sqrt(fit$sn/fit$dn *
+    (sum(curvature_weights^2)+drop(crossprod(ax,fit$vn %*% ax))))
+  tail_area <- pt((-t_observed-center)/scale,fit$dn) +
+    pt((center-t_observed)/scale,fit$dn)
+  list(center=center,scale=scale,df=fit$dn,tail=tail_area)
+}
+replicate_check <- function(fit,r=20000) {
+  draws <- reg_draw(fit,r)
+  means <- draws$beta %*% t(fit$x)
+  replicated <- means + sweep(matrix(rnorm(length(means)),nrow=r),
+                              1,sqrt(draws$sigma2),"*")
+  discrepancies <- abs(drop(replicated %*% curvature_weights))
+  estimate <- mean(discrepancies>=t_observed)
+  exact <- exact_check(fit)$tail
+  se <- sqrt(exact*(1-exact)/r)
+  stopifnot(abs(estimate-exact)<5*se)
+  list(discrepancies=discrepancies,estimate=estimate,exact=exact,MCSE=se)
+}
+set.seed(50012026)
+linear_check <- replicate_check(fit_linear)
+quadratic_check <- replicate_check(fit_quadratic)
+c(observed=t_observed,linear_check[c("estimate","exact","MCSE")])
+c(quadratic_check[c("estimate","exact","MCSE")])
+stopifnot(abs(t_observed-9.996)<.001,
+          abs(linear_check$exact-.126)<.001,
+          abs(quadratic_check$exact-.445)<.001)
+```
+
+```{r cars-lecture-check, echo=FALSE, out.width="100%", fig.cap="Lecture notes, Section 4.4. The right panel shows the exact discrepancy densities used to check the simulation."}
+notes_figure("section44-cars-check.png")
+```
+
+A model can reproduce this discrepancy and still miss variance changes or
+outliers. The same responses motivated the quadratic revision, so passing its
+curvature check is not independent validation. **Extension:** halve and double
+the prior standard deviation of the quadratic coefficient. Repeat prediction at
+15 and 35 mph and the check; report which conclusion is most sensitive.
+
+R `r getRversion()` · BayesComp `r utils::packageVersion('BayesComp')`
