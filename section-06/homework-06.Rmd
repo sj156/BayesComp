@@ -1,0 +1,71 @@
+---
+title: "Homework 6 — Three ways to estimate latency risk"
+subtitle: "STA5001 Bayesian & Computational Statistics"
+output:
+  html_document:
+    code_folding: show
+    code_download: true
+    self_contained: true
+    math_method: mathml
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = TRUE, message = FALSE,
+                      fig.width = 7, fig.height = 4, digits = 4)
+```
+
+The starter code uses the BayesComp package from this checkout. To install
+it, run `R CMD INSTALL BayesComp` from the repository root.
+
+**Concept.** Inversion, rejection, and self-normalized importance sampling
+can target the same posterior quantity. Their error estimates depend on
+how draws or weights contribute to that quantity.
+
+**Example.** Each synthetic batch compares average latency with and
+without a check on the same requests. Let $Y_i$ be the paired difference
+in milliseconds. Treat the 12 batches as independent and model
+$Y_i\mid\theta\sim N(\theta,180^2)$. The noise variance is known. Use
+a $N(0,150^2)$ prior conditioned on $\theta\geq0$. Estimate
+$\Pr(\theta>100\mid\mathbf y)$, where $\theta$ is the mean added latency
+under the stated configuration.
+
+**Starter code.** Load the paired differences and display them by batch.
+The observed differences can be negative because of timing noise.
+
+```{r homework-06-data, fig.cap="Paired differences in batch-average latency."}
+data("hw06_latency", package = "BayesComp")
+plot(difference_ms ~ batch, data = hw06_latency, type = "h",
+     xlab = "Batch", ylab = "Latency with check minus without (ms)")
+abline(h = 0, lty = 2, col = "grey45")
+```
+
+## Tasks
+
+1. **Construct a reference and invert the CDF.** Use the conjugate Gaussian
+   update on the real line, then condition on the nonnegative half-line.
+   Write the resulting CDF and inverse. Compute the reference tail
+   probability and estimate it by inverting 20,000 independent
+   uniforms. Report the iid MCSE.
+2. **Use the prior as a rejection proposal.** Establish a global
+   likelihood bound on $\theta\geq0$ by locating the constrained
+   likelihood maximum. Generate 20,000 proposal values using the
+   half-Normal prior, and apply the accept/reject rule on the log scale.
+   Report the acceptance fraction and estimate the tail probability
+   with an iid MCSE based on the retained draws.
+3. **Reweight the same proposals.** Compute self-normalized importance
+   weights for the proposals in Task 2. Report the estimated tail
+   probability, the functional-specific SNIS MCSE from Section 6.3,
+   and the weight ESS. Explain which draws contribute to the rejection
+   estimate and which contribute to the weighted estimate.
+
+**Outputs and visuals.** State the seed and report the reference and
+three simulated estimates with their MCSEs. Plot the estimates with
+two-MCSE error bars and a horizontal line for the reference. Explain
+how the precision compares at the stated draw budget. For rejection,
+include the number retained so the comparison accounts for work.
+
+**Public-data reference.** The `sleep` data offer a public example of a
+paired design in which both treatments are measured on each subject.
+[R documentation for sleep](https://stat.ethz.ch/R-manual/R-devel/library/datasets/html/sleep.html)
+
+R `r getRversion()` · BayesComp `r utils::packageVersion('BayesComp')`

@@ -1,0 +1,70 @@
+---
+title: "Homework 1 — Admissions and conditioning"
+subtitle: "STA5001 Bayesian & Computational Statistics"
+output:
+  html_document:
+    code_folding: show
+    code_download: true
+    self_contained: true
+    math_method: mathml
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = TRUE, message = FALSE,
+                      fig.width = 7, fig.height = 4, digits = 4)
+```
+
+The starter code uses the BayesComp package from this checkout. To install
+it, run `R CMD INSTALL BayesComp` from the repository root.
+
+**Concept.** A within-department comparison conditions on where people
+apply. An overall comparison also depends on how each group is distributed
+across departments.
+
+**Example.** Compare admission probabilities for groups A and B in two
+synthetic departments, X and Y. Let $y_{gd}$ be the admitted count out of
+$n_{gd}$ applicants in group $g$ and department $d$. Assume independent
+$\operatorname{Binomial}(n_{gd},p_{gd})$ counts and independent
+$\operatorname{Beta}(1,1)$ priors for the four rates. Treat the applicant
+counts as fixed.
+
+**Starter code.** Load the four cells and check that each admitted count
+is between zero and the number of applicants. Use the group and department
+labels to match rates with their application shares.
+
+```{r homework-01-data}
+data("hw01_admissions", package = "BayesComp")
+stopifnot(all(hw01_admissions$admitted >= 0),
+          all(hw01_admissions$admitted <= hw01_admissions$applicants))
+knitr::kable(hw01_admissions)
+```
+
+## Tasks
+
+1. **Compare the observed rates.** Compute the A-minus-B admission-rate
+   difference within each department. Aggregate the counts by group and
+   compute the overall difference. Write the overall rate in terms of
+   within-department rates and group-specific application shares. Explain
+   how the shares affect the comparison.
+2. **Quantify uncertainty about the comparison.** Obtain the four posterior
+   Beta distributions. With a stated seed, draw 20,000 values from each
+   posterior. Within each simulation row, compute the department gaps and
+   the overall gap using each group's observed application shares. Estimate
+   the posterior probability that the department gaps agree in sign and
+   the overall gap has the opposite sign. Report its iid Monte Carlo
+   standard error (MCSE).
+3. **Standardize to a common department mix.** Use the shares among all
+   applicants, pooling the two groups, as the weights for both groups.
+   From the same posterior draws, compute the standardized A-minus-B gap.
+   Explain which applicant composition each overall gap refers to.
+
+**Outputs and visuals.** Submit one table of observed rates and gaps. Plot
+posterior means and 95% equal-tailed credible intervals for the four gaps
+(X, Y, observed mix, and common mix) on one probability-difference axis
+with a zero reference line. Report the reversal probability and its MCSE.
+
+**Public-data reference.** The real Berkeley dataset records 1973
+graduate admissions by department and sex. The assignment uses the
+simulated table above. [R documentation for UCBAdmissions](https://stat.ethz.ch/R-manual/R-devel/library/datasets/html/UCBAdmissions.html)
+
+R `r getRversion()` · BayesComp `r utils::packageVersion('BayesComp')`

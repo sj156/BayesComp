@@ -1,0 +1,66 @@
+---
+title: "Homework 2 — Incident rates and unequal exposure"
+subtitle: "STA5001 Bayesian & Computational Statistics"
+output:
+  html_document:
+    code_folding: show
+    code_download: true
+    self_contained: true
+    math_method: mathml
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = TRUE, message = FALSE,
+                      fig.width = 7, fig.height = 4, digits = 4)
+```
+
+The starter code uses the BayesComp package from this checkout. To install
+it, run `R CMD INSTALL BayesComp` from the repository root.
+
+**Concept.** A Poisson count updates an event rate through both the count
+and the exposure time. For prediction, uncertainty about the rate adds
+variation to the new count.
+
+**Example.** The synthetic data contain 16 monitoring windows of different
+lengths. For window $i$ let $e_i$ be the exposure in hours and $Y_i$ its
+incident count. Assume independent $Y_i\mid\lambda\sim
+\operatorname{Poisson}(e_i\lambda)$ and $\lambda\sim
+\operatorname{Gamma}(2,2)$, with Gamma parameters given as shape and rate.
+The future monitoring window lasts four hours. Estimate the chance of
+more than four incidents in that window.
+
+**Starter code.** Check that the exposures are positive and view the
+raw counts against exposure. The horizontal axis is measured in hours.
+
+```{r homework-02-data, fig.cap="Synthetic counts by monitoring time. Marks may overlap."}
+data("hw02_incidents", package = "BayesComp")
+stopifnot(all(hw02_incidents$exposure_hours > 0),
+          all(hw02_incidents$incidents >= 0))
+plot(incidents ~ exposure_hours, data = hw02_incidents, pch = 19,
+     xlab = "Exposure (hours)", ylab = "Recorded incidents")
+```
+
+## Tasks
+
+1. **Update the rate.** Identify the two data summaries that determine the
+   posterior parameters. Compute the posterior mean and a 95% equal-tailed
+   credible interval for $\lambda$, in incidents per hour.
+2. **Predict the count.** Determine the negative-binomial posterior
+   predictive distribution for the four-hour window. Independently check
+   $\Pr(Y_\star>4\mid\mathbf y)$ by composition sampling with 20,000
+   posterior rate draws and one Poisson count per draw. Report the exact
+   probability, simulation estimate, and iid MCSE.
+3. **Compare predictive variation.** Use the posterior mean rate in a
+   plug-in Poisson forecast for the same window. Compare its variance
+   and exceedance probability with those from the integrated forecast.
+   Explain how the law of total variance accounts for their difference.
+
+**Outputs and visuals.** Report the posterior rate summary and a table
+comparing the two forecasts. Overlay their probability masses on one
+integer count axis, and mark where the exceedance event begins.
+
+**Public-data reference.** The R dataset `discoveries` gives annual
+counts of inventions and scientific discoveries as an example with
+equal-length observation windows. [R documentation for discoveries](https://stat.ethz.ch/R-manual/R-devel/library/datasets/html/discoveries.html)
+
+R `r getRversion()` · BayesComp `r utils::packageVersion('BayesComp')`

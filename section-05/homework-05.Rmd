@@ -1,0 +1,67 @@
+---
+title: "Homework 5 — Model averaging for process loss"
+subtitle: "STA5001 Bayesian & Computational Statistics"
+output:
+  html_document:
+    code_folding: show
+    code_download: true
+    self_contained: true
+    math_method: mathml
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = TRUE, message = FALSE,
+                      fig.width = 7, fig.height = 4, digits = 4)
+```
+
+The starter code uses the BayesComp package from this checkout. To install
+it, run `R CMD INSTALL BayesComp` from the repository root.
+
+**Concept.** Model priors allocate probability over predictor subsets.
+A model-averaged forecast mixes model-specific predictive distributions
+using posterior model probabilities.
+
+**Example.** Twenty-four synthetic process runs record a flow index, a
+temperature index, and a loss on dimensionless teaching scales. Consider
+the four models that include an intercept and any subset of the two mean-centered
+indices. Use independent Normal errors with variance $\sigma^2$. Following
+Section 5.4, use a $g$-prior with $g=8$ for the included slopes, zero
+conditional prior mean, and the common nuisance prior
+$p(\alpha,\sigma^2)\propto1/\sigma^2$ with the same constant in each model.
+
+**Starter code.** Center the predictors once, using all observed runs.
+The new profile in the tasks is already expressed on these centered
+scales. The data preview gives the original column names.
+
+```{r homework-05-data}
+data("hw05_process_loss", package = "BayesComp")
+loss_x <- scale(hw05_process_loss[c("flow_index", "temperature_index")],
+                center = TRUE, scale = FALSE)
+knitr::kable(head(hw05_process_loss))
+```
+
+## Tasks
+
+1. **Compare model evidence.** Enumerate the four subsets and compute
+   their Bayes factors against the intercept-only model. Combine these
+   factors with equal model prior probabilities to obtain the posterior
+   model probabilities and the two posterior inclusion probabilities.
+2. **Change the model prior.** Keep the likelihood and $g$-prior fixed.
+   Assign each predictor an independent inclusion probability of $1/4$.
+   Recompute the posterior probabilities and explain which model
+   comparisons change.
+3. **Average the forecasts.** For one future run at centered coordinates
+   $(1,-1)$, compute each model's predictive mean and variance. Under
+   each model prior, report the averaged predictive mean, the average
+   within-model predictive variance, and the variance of the model-specific
+   predictive means. Use the law of total variance to obtain the total
+   predictive variance.
+
+**Outputs and visuals.** Submit a model table and a predictive summary
+table. Plot posterior probability by model with both model priors displayed
+side by side, and label the predictor subsets.
+
+**Public-data reference.** Brownlee's data describe 21 days of plant
+operation, with process measurements and a loss response. [R documentation for stackloss](https://stat.ethz.ch/R-manual/R-devel/library/datasets/html/stackloss.html)
+
+R `r getRversion()` · BayesComp `r utils::packageVersion('BayesComp')`

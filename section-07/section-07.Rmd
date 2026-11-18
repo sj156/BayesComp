@@ -1,0 +1,296 @@
+---
+title: "Section 7 — Gibbs Sampling Investigations"
+subtitle: "STA5001 Exercise Companion"
+author: "STA5001 Bayesian & Computational Statistics"
+output:
+  html_document:
+    toc: true
+    toc_depth: 3
+    number_sections: false
+    code_folding: show
+    code_download: true
+    self_contained: true
+    math_method: mathml
+---
+
+These investigations extend the worked examples in the STA5001 lecture notes.
+Use the section numbers to find the Gibbs updates and model derivations.
+The code chunks supply data for the investigations.
+
+# 7.2 Constructing a Gibbs sampler
+
+## How measurement precision changes the School A fit
+
+The observed School A effect estimate is 28 SAT-Verbal points with standard
+error 15. Compare it with a hypothetical repeat study whose estimate is 28
+with standard error 7.5. Fit each estimate separately using the model in
+Section 7.2.2. The observation model is $y_A\mid\theta_A\sim N(\theta_A,s_A^2)$,
+and the prior is $\theta_A\mid\eta\sim N(\eta,\tau^2)$ with $\tau=10$ and
+$\eta\sim N(0,400)$. Separate the effect of greater measurement precision
+from variation between finite Gibbs runs.
+
+1. Derive the two full conditionals for the repeat study. Compare the
+   weight on the common center in the update of $\theta_A$.
+2. For each study, find the joint posterior precision $Q$ and linear
+   coefficient $\mathbf b$ for $(\theta_A,\eta)$, so the posterior mean
+   is $Q^{-1}\mathbf b$. Use the joint Normal posterior to calculate
+   $\Pr(\theta_A-\eta>5\mid y_A)$.
+3. For each model run the same systematic scan, updating $\theta_A$ and
+   then $\eta$, from $(-10,20)$ and $(40,-10)$ with independent seeds.
+   Estimate the probability from 4,000 retained sweeps per run after 500
+   initial sweeps. Use the exact probabilities and a plot of the joint
+   draws to explain which differences come from measurement precision
+   and which come from simulation.
+
+## Correct marginals and an incorrect joint posterior
+
+Return to the exact School A posterior in Section 7.2.2 with $\tau=10$ and
+$s_A=15$. Subtract each marginal posterior mean and divide by its posterior
+standard deviation to obtain $(U,V)$ from $(\theta_A,\eta)$. Use $Q^{-1}$ to
+obtain their posterior correlation $\rho$. The correct scan draws
+$U^+=\rho V+\sqrt{1-\rho^2}\,\epsilon_1$ followed by
+$V^+=\rho U^++\sqrt{1-\rho^2}\,\epsilon_2$, with fresh independent standard
+Normal noises. The simultaneous update uses the old $U$ in the second
+equation.
+
+1. Start with an old pair drawn from the target. For each update rule,
+   derive the two marginal variances and the new covariance. For the
+   simultaneous update, repeat the covariance calculation for an old
+   covariance of $c$ and determine its limiting value over many passes.
+2. Compute the target probability $\Pr(U-V>1)$ and the probability under
+   the limiting joint distribution of the simultaneous update. Use the
+   variance of $U-V$ to explain why this event distinguishes the two
+   distributions.
+3. Run both schemes for 5,000 passes from $(0,0)$ with separate fixed
+   seeds. After discarding the first 100 pairs, report the two marginal
+   standard deviations, the correlation, and the estimated contrast
+   probability. Use the calculations above to explain which checks would
+   detect the error.
+
+## Pairing effects within Gibbs sweeps
+
+Fit the full Eight Schools model in Section 7.2.3. Use the observed estimates
+and standard errors below, the center prior $\eta\sim N(0,400)$, and the
+variance prior $\tau^2\sim\operatorname{IG}(3,200)$ in shape–scale form.
+Use the three-block scan $(\boldsymbol\theta,\eta,\tau^2)$. Start at
+$(\eta,\tau)=(-15,2),(0,6),(10,15),(30,30)$, set the four seeds to 7301–7304,
+and retain 40,000 sweeps per chain after discarding 2,000.
+
+```{r eight-schools}
+data("eight_schools", package = "BayesComp")
+knitr::kable(eight_schools, col.names = c("School", "Estimated effect", "SE"))
+```
+
+1. Estimate $\Pr(\theta_G>\theta_A\mid\mathbf y)$ and the posterior
+   variance of $\theta_G-\theta_A$ from the paired draws.
+2. Shuffle the G draws within each chain and repeat both calculations.
+3. Use the covariance term in the variance of the contrast and the joint
+   contours in panel A of Figure 7.2.3 to explain the effect of shuffling.
+
+## When did the coal-disaster rate change? {#gibbs-change-point}
+
+Use annual counts of British coal-mining disasters with at least ten
+fatalities to estimate when the rate changed and how large the decline was.
+Before fitting the model, use the plot to identify a plausible span of years
+for the shift.
+
+<details>
+<summary>Copy the annual counts into R</summary>
+
+```{r coal-disaster-counts, echo=TRUE, code_folding="none"}
+coal_disasters <- c(
+  4, 5, 4, 1, 0, 4, 3, 4, 0, 6, 3, 3, 4, 0,  # 1851–1864
+  2, 6, 3, 3, 5, 4, 5, 3, 1, 4, 4, 1, 5, 5,  # 1865–1878
+  3, 4, 2, 5, 2, 2, 3, 4, 2, 1, 3, 2, 2, 1,  # 1879–1892
+  1, 1, 1, 3, 0, 0, 1, 0, 1, 1, 0, 0, 3, 1,  # 1893–1906
+  0, 3, 2, 2, 0, 1, 1, 1, 0, 1, 0, 1, 0, 0,  # 1907–1920
+  0, 2, 1, 0, 0, 0, 1, 1, 0, 2, 3, 3, 1, 1,  # 1921–1934
+  2, 1, 1, 1, 1, 2, 4, 2, 0, 0, 0, 1, 4, 0,  # 1935–1948
+  0, 0, 1, 0, 0, 0, 0, 0, 1, 0, 0, 1, 0, 1  # 1949–1962
+)
+coal_year <- 1851:1962
+stopifnot(length(coal_disasters) == length(coal_year))
+```
+
+</details>
+
+```{r coal-disaster-plot, echo=FALSE, fig.width=7, fig.height=2.8, fig.cap="Annual British coal-mining disaster counts, 1851–1962."}
+plot(coal_year, coal_disasters, type = "h", lwd = 2, col = "#285A79",
+     xlab = "Year", ylab = "Disasters", ylim = c(0, 6), bty = "l")
+```
+
+The series is based on R. G. Jarrett (1979), “A note on the intervals
+between coal-mining disasters,” *Biometrika* 66(1), 191–193.
+
+Let $y_i$ be the count in year $1850+i$, with $n=112$. Let $M$ be the
+final index at the early rate, so $1850+M$ is the last year at that
+rate. Given $M$, $\lambda_1$, and $\lambda_2$, the counts are independent
+Poisson with rate $\lambda_1$ through index $M$ and $\lambda_2$ thereafter.
+Use a uniform prior on $M\in\{1,\ldots,n-1\}$ and independent
+$\operatorname{Gamma}(0.001,0.001)$ priors on the rates, using shape and
+rate. In the derivations, write the hyperparameters as $(a_j,b_j)$
+for $j=1,2$ and put $S_k=\sum_{i=1}^k y_i$.
+
+1. **Construct and run the sampler.** Derive the two Gamma conditionals
+   and the categorical conditional for $M$. Explain why the rates can be
+   updated together given $M$. Update $(\lambda_1,\lambda_2)$ first and
+   then $M$, starting at $M=56$ with seed 7311. Use log weights for the
+   categorical update. Discard 2,000 initial sweeps and retain 10,000.
+   On a scatterplot of the rate pairs, mark the first ten completed sweeps
+   in order and show where the retained pairs lie.
+
+2. **Check the date of the shift.** Integrate out the rates to show that
+
+   $$
+   \Pr(M=k\mid\mathbf y)\propto
+   \frac{\Gamma(a_1+S_k)}{(b_1+k)^{a_1+S_k}}
+   \frac{\Gamma(a_2+S_n-S_k)}{(b_2+n-k)^{a_2+S_n-S_k}}.
+   $$
+
+   Normalize over the candidate years. Compare the exact probabilities and the
+   Gibbs frequencies on common axes. Report the median and 95% equal-tail
+   posterior interval for the last year at the early rate. Explain how drawing
+   $M$ from these probabilities and then drawing the rates gives independent
+   complete posterior draws.
+
+3. **Check the size of the decline.** Estimate
+   $\Pr(\lambda_2<\lambda_1/3\mid\mathbf y)$ from the complete Gibbs states.
+   For an independent check, write $(A_{jk},B_{jk})$ for the shape and rate
+   of $\lambda_j$ given $M=k$. Scale both Gamma variables to unit rate and
+   use the resulting Beta ratio to show that, for $c>0$,
+
+   $$
+   \Pr(\lambda_2<c\lambda_1\mid M=k,\mathbf y)
+   = F_{\operatorname{Beta}(A_{2k},A_{1k})}
+     \!\left(\frac{c B_{2k}}{B_{1k}+c B_{2k}}\right).
+   $$
+
+   Average this probability over the exact distribution of $M$ with $c=1/3$.
+   Compare with the fraction of complete Gibbs sweeps satisfying the event
+   and explain why that estimate uses paired rates.
+
+# 7.3 Invariance and convergence of Gibbs sweeps
+
+## Diagnosing an unexplored part of the support
+
+Can Gibbs summaries agree with the target when the chain has missed part of
+its support? Use the four-state family in lecture Section 7.3.5. In the
+state order $(0,0),(0,1),(1,0),(1,1)$, the target masses are
+$((1-\varepsilon)/2,\varepsilon/2,\varepsilon/2,(1-\varepsilon)/2)$.
+Compare $\varepsilon=0.02$ and $\varepsilon=0$. Begin with a sweep that
+updates $X$ given $Y$ and then $Y$ given the new $X$.
+
+1. **Track two summaries exactly.** For each target and each start, $(0,0)$
+   and $(1,1)$, compute $\Pr(X_s=Y_s)$ and $\Pr(Y_s=1)$ after $s=1$ and
+   $s=10$ sweeps. Use the mixture of the two transition rows and the
+   recurrence for $p_s=\Pr(Y_s=1)$ from Section 7.3.5. Which summary
+   reveals dependence on the start?
+2. **Check the transition behavior.** With a fixed seed, run 2,000
+   independent ten-sweep chains for each combination of target, scan
+   order ($X$ then $Y$, or $Y$ then $X$), and start. For
+   $\varepsilon=0.02$, compare the fraction ending at the opposite
+   diagonal corner with the corresponding entry of the ten-sweep
+   transition matrix. For $\varepsilon=0$, pool the final states from
+   equally many chains started at each corner. Explain how the pooled
+   summaries can agree with the target even when no chain crosses.
+3. **Change the block.** Replace the two coordinate updates by a single
+   exact draw of $(X,Y)$ from the target. Give the distribution after one
+   sweep from each start. Use the support to explain why drawing one
+   joint block changes what the chain can reach.
+
+# 7.4 Gibbs sampling for multivariate and hierarchical models
+
+## Levels of replication and joint updating
+
+Return to the Project STAR case study in Section 7.4.3. Let $Y_{ijk}$
+be the kindergarten mathematics score transformed to $(\text{score}-500)/50$
+for pupil $i$ in classroom $j$ of school $k$. Let $T_{jk}=1$ for a small
+class and $T_{jk}=0$ for a regular class without an aide. Assume conditional
+independence within each layer of
+$$
+\begin{aligned}
+ Y_{ijk}\mid \theta_{jk},\sigma^2 &\sim N(\theta_{jk},\sigma^2),\\
+ \theta_{jk}\mid\mu_k,\beta,\tau_c^2 &\sim N(\mu_k+\beta T_{jk},\tau_c^2),\\
+ \mu_k\mid\eta,\tau_s^2 &\sim N(\eta,\tau_s^2).
+\end{aligned}
+$$
+The five independent priors are $N(0,1)$ for each of $\eta,\beta$ and
+$\operatorname{InvGamma}(3,b)$ for the three variances, with
+$b=2,0.18,0.5$ for $\sigma^2,\tau_c^2,\tau_s^2$, respectively. The second
+inverse-Gamma parameter $b$ is the rate of the reciprocal variable.
+
+The starter data give unrounded summaries for the 28 classrooms in
+Section 7.4.3. They use kindergarten mathematics scores from the
+[archived Project STAR student file](https://dataverse.harvard.edu/api/access/datafile/666716)
+and follow the selection rule given there. The data describe 474 pupils
+in eight schools. For each class they give its type, number of observed
+scores, mean transformed score, and within-class sum of squared deviations.
+Use these summaries for all three sampler designs.
+
+```{r project-star-class-data}
+star <- read.csv(text = '
+school,class,small,n,mean,within_ss
+A,1,0,20,-0.366,10.12008
+A,2,1,13,-0.235384615384615,9.51852307692308
+A,3,1,17,-0.295294117647059,14.9380235294118
+B,1,1,16,0.0225,6.8991
+B,2,0,19,0.288421052631579,9.03945263157895
+B,3,1,16,0.71875,8.894775
+B,4,0,21,0.289523809523809,14.8604952380952
+C,1,1,13,-0.509230769230769,5.70769230769231
+C,2,0,24,-0.525833333333333,11.8731833333333
+C,3,1,17,-0.394117647058824,7.91101176470588
+D,1,0,22,-0.0227272727272728,15.6482363636364
+D,2,1,13,1.00307692307692,15.1950769230769
+D,3,0,20,-0.0809999999999999,20.04598
+D,4,1,11,0.405454545454545,7.99127272727273
+E,1,0,19,0.0210526315789473,9.79717894736842
+E,2,1,12,-0.345,10.2673
+E,3,1,12,-0.145,3.3337
+F,1,1,13,-0.941538461538461,4.18036923076923
+F,2,0,21,-0.840952380952381,12.124380952381
+F,3,1,14,-0.207142857142857,9.99408571428572
+G,1,0,21,0.02,14.3744
+G,2,1,13,-0.436923076923077,7.05507692307692
+G,3,1,15,-0.522666666666667,14.9526933333333
+H,1,1,17,0.663529411764706,16.9849882352941
+H,2,0,23,-0.400869565217391,17.4099826086957
+H,3,0,20,-0.288,8.59872
+H,4,1,15,-0.196,7.66416
+H,5,1,17,0.169411764705882,11.3656941176471
+')
+```
+
+1. **Predict at two levels.** For a class of fixed type $t$, derive the
+   conditional predictive distributions of a pupil score in a new
+   classroom at an observed school and of a pupil score in a new classroom
+   at a new school. Apply total variance to include posterior uncertainty
+   in $\mu_k+\beta t$ or $\eta+\beta t$, respectively. Work on the
+   transformed score scale.
+2. **Identify the joint precision.** At fixed variances, derive the joint
+   Normal precision matrix for the classroom means, school means,
+   population center, and class-size coefficient. Identify the
+   off-diagonal entries involving $\beta$ and which classrooms contribute
+   to them.
+3. **Examine the non-centered school effects.** Write
+   $\mu_k=\eta+\tau_s Z_k$, with independent $Z_k\sim N(0,1)$ a priori.
+   At fixed $(\eta,\beta,\tau_s,\tau_c)$ and classroom means, derive the
+   conditional mean and variance of $Z_k$. Compare the variance when
+   $\tau_c^2/J_k$ is large or small relative to $\tau_s^2$, where $J_k$
+   counts classrooms in school $k$.
+4. **Compare at equal elapsed time.** Implement the separate centered
+   updates, the joint centered update, and the update that non-centers
+   the school means, using the Gibbs algorithms in Section 7.4.3. Estimate
+   the posterior mean of the school variance share
+   $\tau_s^2/(\sigma^2+\tau_c^2+\tau_s^2)$. Use the four starts and
+   warm-up rule under *Mixing checks* in Section 7.4.3. Give each design
+   the same elapsed sampling budget after warm-up. Keep MCSE batches
+   within chains (Section 8.4.3). Report elapsed time, retained draws,
+   the estimated mean, and its MCSE for each design.
+5. **Change the school-variance prior.** Change only the prior on
+   $\tau_s^2$ to $\operatorname{InvGamma}(3,1)$. Use one of the samplers
+   to compare the posterior means of $\beta$ and the school variance
+   share under the two priors. Use independent runs and assess the
+   estimated differences relative to their MCSEs.
+
+Rendered with R `r getRversion()` and BayesComp `r packageVersion("BayesComp")`.

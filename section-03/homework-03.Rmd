@@ -1,0 +1,71 @@
+---
+title: "Homework 3 — Partial pooling of calibration offsets"
+subtitle: "STA5001 Bayesian & Computational Statistics"
+output:
+  html_document:
+    code_folding: show
+    code_download: true
+    self_contained: true
+    math_method: mathml
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = TRUE, message = FALSE,
+                      fig.width = 7, fig.height = 4, digits = 4)
+```
+
+The starter code uses the BayesComp package from this checkout. To install
+it, run `R CMD INSTALL BayesComp` from the repository root.
+
+**Concept.** A hierarchical Gaussian model uses a shared center to pool
+estimates with different precisions. A comparison of two latent offsets
+depends on their joint posterior.
+
+**Example.** Seven laboratories report synthetic estimates $y_j$ of a
+voltage offset and standard errors $s_j$, both in millivolts. Given the
+latent offsets $\theta_j$, assume independent measurements
+$Y_j\mid\theta_j\sim N(\theta_j,s_j^2)$. Use independent
+$\theta_j\mid\eta,\tau\sim N(\eta,\tau^2)$ and independent priors
+$\eta\sim N(0,16)$ and $\tau^2\sim\operatorname{IG}(3,4)$. The
+second argument of $N$ is a variance. The inverse-gamma uses shape and
+scale, so $1/\tau^2$ has a Gamma distribution with shape 3 and rate 4.
+
+**Starter code.** Name each offset and sampling variance by laboratory.
+The BayesComp functions from Section 3.3 take the sampling variances
+`lab_s2`. The table lists sampling standard errors.
+
+```{r homework-03-data}
+data("hw03_labs", package = "BayesComp")
+lab_y <- setNames(hw03_labs$offset_mv, hw03_labs$lab)
+lab_s2 <- setNames(hw03_labs$se_mv^2, hw03_labs$lab)
+knitr::kable(hw03_labs, col.names = c("Lab", "Offset (mV)", "SE (mV)"))
+```
+
+## Tasks
+
+1. **Calculate partial pooling.** At $\tau=1$ mV, use the conditional
+   Gaussian calculations from Section 3.3 to report the weights on the
+   measurements and the posterior offset means for labs A and C. Explain
+   the role of their different standard errors.
+2. **Integrate over the pooling scale.** Implement the log prior density
+   on $\tau$, including the change-of-variables factor. Compute the
+   posterior scale grid on $[0,12]$ with spacing $0.02$ mV. Check the
+   numerical result for $E(\tau\mid\mathbf y)$ by halving the spacing
+   and by extending the upper endpoint to $24$ mV at the original spacing.
+3. **Compare offsets jointly.** Draw 20,000 complete posterior records
+   using the fine grid and the conditional Gaussian distributions. In
+   each record, keep the same $\tau$ and shared center $\eta$ for all
+   laboratories. Estimate $\Pr(\theta_A-\theta_E>1\ \mathrm{mV}
+   \mid\mathbf y)$ and its iid MCSE. Explain why drawing A and E from
+   separate marginal posteriors would change this comparison.
+
+**Outputs and visuals.** Report the fixed-scale comparison, the three
+grid estimates of $E(\tau\mid\mathbf y)$, and the joint contrast probability
+with its MCSE. Plot the observed offsets and posterior means with 95%
+equal-tailed credible intervals for the latent offsets.
+
+**Public-data reference.** Rubin's Table 3 gives a real set of effect
+estimates with known standard errors for the Eight Schools application.
+[Rubin (1984), Section 2.5 and Table 3](https://www.cs.columbia.edu/~blei/fogm/2020F/readings/Rubin1984.pdf)
+
+R `r getRversion()` · BayesComp `r utils::packageVersion('BayesComp')`

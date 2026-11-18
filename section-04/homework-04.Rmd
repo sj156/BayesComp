@@ -1,0 +1,69 @@
+---
+title: "Homework 4 — Stopping-distance predictions"
+subtitle: "STA5001 Bayesian & Computational Statistics"
+output:
+  html_document:
+    code_folding: show
+    code_download: true
+    self_contained: true
+    math_method: mathml
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = TRUE, message = FALSE,
+                      fig.width = 7, fig.height = 4, digits = 4)
+```
+
+The starter code uses the BayesComp package from this checkout. To install
+it, run `R CMD INSTALL BayesComp` from the repository root.
+
+**Concept.** A credible interval for the mean response and a prediction
+interval for an individual response include different sources of
+uncertainty. Predictions beyond the observed predictor range can also
+depend strongly on the assumed mean function.
+
+**Example.** A synthetic bench experiment gives stopping distances in
+feet for runs at 10 to 30 mph. Write $z=(\text{speed}-20)/10$. Compare
+Gaussian regressions with mean $\beta_0+\beta_1z$ and with mean
+$\beta_0+\beta_1z+\beta_2z^2$, each with independent errors of variance
+$\sigma^2$. In each model use $\sigma^2\sim\operatorname{IG}(3,180)$
+with shape 3 and scale 180, so $1/\sigma^2$ has Gamma shape 3
+and rate 180.
+Use a conditional Normal coefficient prior with mean $(50,25)$ and
+covariance $\sigma^2\operatorname{diag}(4,4)$ for the linear fit.
+For the quadratic fit add an independent coefficient conditional on
+$\sigma^2$ with mean zero and variance $\sigma^2$.
+
+**Starter code.** Inspect the observed runs on their original scales.
+Calculate the same centered predictor for both models. Use this definition
+again when constructing prediction rows for new speeds.
+
+```{r homework-04-data, fig.cap="The synthetic bench runs at the five observed speeds."}
+data("hw04_braking", package = "BayesComp")
+braking_z <- (hw04_braking$speed_mph - 20) / 10
+plot(distance_ft ~ speed_mph, data = hw04_braking, pch = 19,
+     xlab = "Speed (mph)", ylab = "Distance (ft)")
+```
+
+## Tasks
+
+1. **Fit both models.** Use the conjugate update from Section 4.2 and
+   report the posterior coefficient means and the updated inverse-gamma
+   parameters. Label the scale and shape of the variance posterior.
+2. **Separate the two prediction targets.** At 20 mph and 38 mph, compute
+   the posterior mean distance, a 95% equal-tailed credible interval for
+   the mean response, and a 95% equal-tailed prediction interval for a
+   future run. Use the Student distributions from Section 4.4.
+3. **Interpret extrapolation.** Compare the two fits at the two speeds.
+   Identify the part of the difference between the interval types that
+   is due to residual variation and discuss the role of model form at
+   38 mph.
+
+**Outputs and visuals.** Report the four model-by-speed predictions in
+one table. Make a panel for each model showing the data, posterior mean
+curve, and both pointwise interval types. Mark the observed speed range.
+
+**Public-data reference.** The R dataset `cars` documents 50 observed
+stopping distances and their speeds. [R documentation for cars](https://stat.ethz.ch/R-manual/R-devel/library/datasets/html/cars.html)
+
+R `r getRversion()` · BayesComp `r utils::packageVersion('BayesComp')`
