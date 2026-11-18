@@ -4,3 +4,5 @@
 .Rproj.user/
 *.Rcheck/
 BayesComp_*.tar.gz
+
+.DS_Store

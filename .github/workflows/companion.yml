@@ -22,13 +22,13 @@ jobs:
         run: Rscript --vanilla -e 'install.packages("rmarkdown")'
       - name: Build and check the package
         run: |
-          R CMD build .
+          R CMD build BayesComp
           R CMD check --no-manual BayesComp_*.tar.gz
       - name: Install and render in clean R sessions
         run: |
           R CMD INSTALL BayesComp_*.tar.gz
-          Rscript --vanilla scripts/render-chapters.R
+          Rscript --vanilla BayesComp/tools/render-sections.R
       - uses: actions/upload-artifact@v4
         with:
           name: companion
-          path: docs/
+          path: section-*/

@@ -1,5 +1,5 @@
 ---
-title: "Chapter 2 — One-parameter Models"
+title: "Section 2 — One-parameter Models"
 subtitle: "STA5001 R Computational Companion"
 author: "STA5001 Bayesian & Computational Statistics"
 output:
@@ -24,9 +24,9 @@ notes_figure <- function(file) {
 
 Work through the examples in order. Section numbers follow the STA5001
 lecture notes, which develop the models and algorithms used here. Open
-`chapter-02.Rmd` in RStudio and choose **Knit** to reproduce the outputs.
-Install BayesComp with `remotes::install_github("sj156/BayesComp")`
-to use the lecture-note figures included in this chapter.
+`section-02.Rmd` in RStudio and choose **Knit** to reproduce the outputs.
+Install BayesComp with `remotes::install_github("sj156/BayesComp", subdir = "BayesComp")`
+to use the lecture-note figures included in this section.
 
 # Section 2.1 — Binary inference and credible-set calibration
 
